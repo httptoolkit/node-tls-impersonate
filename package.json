@@ -1,0 +1,50 @@
+{
+  "name": "tls-impersonate",
+  "version": "0.0.0",
+  "description": "TLS fingerprint control within Node.js's normal networking APIs ",
+  "keywords": [
+    "TLS",
+    "fingerprint",
+    "impersonate",
+    "openssl",
+    "extensions",
+    "control"
+  ],
+  "homepage": "https://github.com/httptoolkit/tls-impersonate#readme",
+  "bugs": {
+    "url": "https://github.com/httptoolkit/tls-impersonate/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/httptoolkit/tls-impersonate.git"
+  },
+  "license": "Apache-2.0",
+  "author": "Tim Perry <tim@httptoolkit.com>",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "tsc",
+    "test": "mocha"
+  },
+  "ts-node": {
+    "esm": true,
+    "project": "tsconfig.test.json"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^25.3.3",
+    "chai": "^6.2.2",
+    "mocha": "^11.7.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
