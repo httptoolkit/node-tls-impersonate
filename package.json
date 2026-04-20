@@ -23,19 +23,26 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "gypfile": true,
   "files": [
-    "dist"
+    "dist",
+    "native",
+    "binding.gyp",
+    "prebuilds"
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc",
+    "install": "node-gyp-build",
+    "build": "node-gyp rebuild && tsc",
+    "build:ts": "tsc",
     "prepublishOnly": "tsc",
-    "test": "mocha"
+    "test": "TS_NODE_TRANSPILE_ONLY=true mocha"
   },
   "ts-node": {
     "esm": true,
+    "transpileOnly": true,
     "project": "tsconfig.test.json"
   },
   "devDependencies": {
@@ -46,5 +53,9 @@
     "mocha": "^11.7.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "node-gyp-build": "^4.8.4",
+    "read-tls-client-hello": "^1.1.0"
   }
 }
