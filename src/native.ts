@@ -57,13 +57,6 @@ try {
 export const constants = binding.constants;
 
 /**
- * Get the native OpenSSL context object from a SecureContext.
- */
-function getNativeCtx(ctx: tls.SecureContext): object {
-    return (ctx as any).context;
-}
-
-/**
  * Add a custom TLS extension to a SecureContext.
  * Only works for extensions not predefined by OpenSSL.
  */
@@ -88,7 +81,7 @@ export function addCustomExtension(
     }
 
     binding.addCustomExtension(
-        getNativeCtx(ctx),
+        ctx,
         options.extensionType,
         options.context,
         hasData ? options.data! : null,
@@ -119,7 +112,7 @@ export function enableCompressCertificate(
     ctx: tls.SecureContext,
     algorithms: number[]
 ): void {
-    binding.enableCompressCertificate(getNativeCtx(ctx), algorithms);
+    binding.enableCompressCertificate(ctx, algorithms);
 }
 
 /**
@@ -127,7 +120,7 @@ export function enableCompressCertificate(
  * Causes the post_handshake_auth extension (49) to be sent in ClientHello.
  */
 export function enablePostHandshakeAuth(ctx: tls.SecureContext): void {
-    binding.enablePostHandshakeAuth(getNativeCtx(ctx));
+    binding.enablePostHandshakeAuth(ctx);
 }
 
 /**
@@ -135,12 +128,12 @@ export function enablePostHandshakeAuth(ctx: tls.SecureContext): void {
  * flags with existing options.
  */
 export function setOptions(ctx: tls.SecureContext, options: number): void {
-    binding.setOptions(getNativeCtx(ctx), options);
+    binding.setOptions(ctx, options);
 }
 
 /**
  * Clear SSL_CTX options.
  */
 export function clearOptions(ctx: tls.SecureContext, options: number): void {
-    binding.clearOptions(getNativeCtx(ctx), options);
+    binding.clearOptions(ctx, options);
 }

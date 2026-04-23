@@ -183,9 +183,9 @@ static int CustomExtParseCallback(SSL* s,
 
 // Resolve SSL_CTX* from a SecureContext object.
 //
-// Prefers node::crypto::GetSSLCtx (available in Node.js builds that expose it),
-// resolved via dlsym at runtime. Falls back to extracting the _external
-// property from the native context object.
+// On newer Node builds (v26+), uses node::crypto::GetSSLCtx which is resolved
+// via dlsym at runtime. On older builds without that export, falls back to
+// extracting the _external property from the native context object.
 using GetSSLCtxFunc = SSL_CTX* (*)(v8::Local<v8::Context>, v8::Local<v8::Value>);
 
 static GetSSLCtxFunc ResolveGetSSLCtx() {
@@ -195,20 +195,29 @@ static GetSSLCtxFunc ResolveGetSSLCtx() {
           "_ZN4node6crypto9GetSSLCtxEN2v85LocalINS1_7ContextEEENS2_INS1_5ValueEEE"));
 }
 
-static SSL_CTX* ExtractSSLCtxFallback(Local<Context> context, Local<Value> value) {
-  Isolate* isolate = context->GetIsolate();
+static SSL_CTX* ExtractSSLCtxFromExternal(Local<Context> context,
+                                          Local<Value> value) {
+  Isolate* isolate = Isolate::GetCurrent();
+
+  // If given the outer JS wrapper (from tls.createSecureContext()),
+  // unwrap .context to get the native SecureContext first.
+  if (value->IsObject()) {
+    Local<Object> obj = value.As<Object>();
+    Local<String> ctx_key = String::NewFromUtf8Literal(isolate, "context");
+    Local<Value> inner;
+    if (obj->Get(context, ctx_key).ToLocal(&inner) && inner->IsObject()) {
+      // Found .context — use the inner native SecureContext
+      obj = inner.As<Object>();
+    }
+    Local<String> ext_key = String::NewFromUtf8Literal(isolate, "_external");
+    Local<Value> ext_val;
+    if (obj->Get(context, ext_key).ToLocal(&ext_val) && ext_val->IsExternal()) {
+      return static_cast<SSL_CTX*>(ext_val.As<v8::External>()->Value());
+    }
+  }
 
   if (value->IsExternal()) {
     return static_cast<SSL_CTX*>(value.As<v8::External>()->Value());
-  }
-
-  if (value->IsObject()) {
-    Local<Object> obj = value.As<Object>();
-    Local<String> key = String::NewFromUtf8Literal(isolate, "_external");
-    Local<Value> ext_val;
-    if (obj->Get(context, key).ToLocal(&ext_val) && ext_val->IsExternal()) {
-      return static_cast<SSL_CTX*>(ext_val.As<v8::External>()->Value());
-    }
   }
 
   isolate->ThrowException(Exception::TypeError(
@@ -220,7 +229,7 @@ static SSL_CTX* ExtractSSLCtxFallback(Local<Context> context, Local<Value> value
 static SSL_CTX* GetSSLCtx(Local<Context> context, Local<Value> value) {
   static GetSSLCtxFunc fn = ResolveGetSSLCtx();
   if (fn) return fn(context, value);
-  return ExtractSSLCtxFallback(context, value);
+  return ExtractSSLCtxFromExternal(context, value);
 }
 
 // ─── Exported functions ──────────────────────────────────────────────────────
