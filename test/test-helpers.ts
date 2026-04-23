@@ -144,7 +144,7 @@ export async function captureClientHello(options?: {
                 port: addr.port,
                 servername: options?.servername ?? 'localhost',
                 rejectUnauthorized: false,
-                ALPNProtocols: options?.ALPNProtocols ?? ['h2', 'http/1.1'],
+                ...(options?.ALPNProtocols ? { ALPNProtocols: options.ALPNProtocols } : {}),
                 ...(options?.secureContext ? { secureContext: options.secureContext } : {}),
                 ...(options?.requestOCSP ? { requestOCSP: true } : {}),
             };
