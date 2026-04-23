@@ -16,7 +16,7 @@ jobs:
         node-version:
           - 22    # Uses _external fallback for SSL_CTX
           - 24    # 24.15+ exports GetSSLCtx
-          - '*'   # Latest release — tracks new versions as they ship
+          - latest
 
     steps:
       - uses: actions/checkout@v4
