@@ -230,10 +230,14 @@ function parseCertCompressionAlgorithms(data: Buffer): number[] {
 
 // Extension type constants for config-driven handling
 const EXT_STATUS_REQUEST = 5;
+const EXT_PADDING = 21;
 const EXT_ENCRYPT_THEN_MAC = 22;
 const EXT_COMPRESS_CERTIFICATE = 27;
 const EXT_SESSION_TICKET = 35;
 const EXT_POST_HANDSHAKE_AUTH = 49;
+
+// Not exposed in Node's crypto.constants
+const SSL_OP_TLSEXT_PADDING = 1 << 4;
 
 // ─── Main Function ───────────────────────────────────────────────────────────
 
@@ -344,6 +348,12 @@ export function impersonate(
 
     if (!extTypes.has(EXT_SESSION_TICKET)) {
         setOptions(ctx, crypto.constants.SSL_OP_NO_TICKET);
+    }
+
+    // Enable conditional padding (OpenSSL pads ClientHello to 512 bytes when
+    // it would otherwise be 256-511 bytes, per RFC 7685 F5 workaround).
+    if (extTypes.has(EXT_PADDING)) {
+        setOptions(ctx, SSL_OP_TLSEXT_PADDING);
     }
 
     if (extTypes.has(EXT_POST_HANDSHAKE_AUTH)) {
