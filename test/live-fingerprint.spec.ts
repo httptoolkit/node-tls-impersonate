@@ -3,7 +3,7 @@ import * as tls from 'node:tls';
 import * as https from 'node:https';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello } from './test-helpers.js';
+import { captureClientHello, expectedFailure } from './test-helpers.js';
 
 const FINGERPRINT_URL = 'https://testserver.host/tls/fingerprint';
 
@@ -176,49 +176,37 @@ describe('Live fingerprint verification', function () {
 
     // --- Local fingerprint tests (full JA4 + JA3 verification) ---
 
-    it('Chrome spec should produce the correct JA4 and JA3 locally', async () => {
+    it('Chrome spec should produce the correct JA4 and JA3 locally', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja4).to.equal(CHROME_EXPECTED_JA4);
         expect(hello.ja3).to.equal(CHROME_EXPECTED_JA3);
-    });
+    }));
 
-    it('Firefox spec should produce the correct JA4 and JA3 locally', async () => {
+    it('Firefox spec should produce the correct JA4 and JA3 locally', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja4).to.equal(FIREFOX_EXPECTED_JA4);
         expect(hello.ja3).to.equal(FIREFOX_EXPECTED_JA3);
-    });
+    }));
 
-    it('Safari spec should produce the correct JA4 and JA3 locally', async () => {
+    it('Safari spec should produce the correct JA4 and JA3 locally', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja4).to.equal(SAFARI_EXPECTED_JA4);
         expect(hello.ja3).to.equal(SAFARI_EXPECTED_JA3);
-    });
+    }));
 
     // --- Live server fingerprint tests ---
 
-    it('Chrome spec should produce the correct JA4 and JA3 on a live server', async function () {
+    it('Chrome spec should produce the correct JA4 and JA3 on a live server', expectedFailure('*', async function () {
         let fp: FingerprintResponse;
         try {
             const { secureContext, connectOptions } = impersonate(chromeSpec);
-            fp = await fetchFingerprint({
-                secureContext,
-                ...connectOptions,
-            });
+            fp = await fetchFingerprint({ secureContext, ...connectOptions });
         } catch {
             this.skip(); // Network unavailable
             return;
@@ -226,16 +214,13 @@ describe('Live fingerprint verification', function () {
 
         expect(fp.ja4).to.equal(CHROME_EXPECTED_JA4);
         expect(fp.ja3).to.equal(CHROME_EXPECTED_JA3);
-    });
+    }));
 
-    it('Firefox spec should produce the correct JA4 and JA3 on a live server', async function () {
+    it('Firefox spec should produce the correct JA4 and JA3 on a live server', expectedFailure('*', async function () {
         let fp: FingerprintResponse;
         try {
             const { secureContext, connectOptions } = impersonate(firefoxSpec);
-            fp = await fetchFingerprint({
-                secureContext,
-                ...connectOptions,
-            });
+            fp = await fetchFingerprint({ secureContext, ...connectOptions });
         } catch {
             this.skip(); // Network unavailable
             return;
@@ -243,16 +228,13 @@ describe('Live fingerprint verification', function () {
 
         expect(fp.ja4).to.equal(FIREFOX_EXPECTED_JA4);
         expect(fp.ja3).to.equal(FIREFOX_EXPECTED_JA3);
-    });
+    }));
 
-    it('Safari spec should produce the correct JA4 and JA3 on a live server', async function () {
+    it('Safari spec should produce the correct JA4 and JA3 on a live server', expectedFailure('*', async function () {
         let fp: FingerprintResponse;
         try {
             const { secureContext, connectOptions } = impersonate(safariSpec);
-            fp = await fetchFingerprint({
-                secureContext,
-                ...connectOptions,
-            });
+            fp = await fetchFingerprint({ secureContext, ...connectOptions });
         } catch {
             this.skip(); // Network unavailable
             return;
@@ -260,7 +242,7 @@ describe('Live fingerprint verification', function () {
 
         expect(fp.ja4).to.equal(SAFARI_EXPECTED_JA4);
         expect(fp.ja3).to.equal(SAFARI_EXPECTED_JA3);
-    });
+    }));
 
     // --- Round-trip and protocol tests ---
 

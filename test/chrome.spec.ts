@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello } from './test-helpers.js';
+import { captureClientHello, expectedFailure } from './test-helpers.js';
 
 // Chrome 133+ ClientHello spec
 const chromeSpec: ClientHelloSpec = {
@@ -57,33 +57,21 @@ const CHROME_EXPECTED_JA4 = 't13d1516h2_8daaf6152771_d8a2da3f94cd';
 describe('Chrome TLS fingerprint impersonation', () => {
     it('should match Chrome cipher suites exactly', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, ciphers] = hello.fingerprintData;
 
-        // 15 ciphers (3 TLS1.3 + 12 TLS1.2; GREASE is stripped)
-        expect(ciphers).to.have.length(15);
-
-        const expectedCiphers = [
+        expect(ciphers).to.deep.equal([
             0x1301, 0x1302, 0x1303,
             0xc02b, 0xc02f, 0xc02c, 0xc030,
             0xcca9, 0xcca8,
             0xc013, 0xc014,
             0x009c, 0x009d, 0x002f, 0x0035,
-        ];
-        expect(ciphers).to.deep.equal(expectedCiphers);
+        ]);
     });
 
     it('should match Chrome signature algorithms exactly', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, , , , , sigAlgorithms] = hello.fingerprintData;
 
         expect(sigAlgorithms).to.deep.equal([
@@ -93,64 +81,43 @@ describe('Chrome TLS fingerprint impersonation', () => {
 
     it('should match Chrome supported groups exactly', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, , , groups] = hello.fingerprintData;
 
         expect(groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018]);
     });
 
-    it('should match Chrome extensions exactly', async () => {
+    // Requires Node certificate compression support (pending Node PR 62217)
+    it('should match Chrome extensions exactly', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, , extensions] = hello.fingerprintData;
-        const extSet = new Set(extensions);
 
-        // Must have exactly the expected extensions
-        expect(extSet).to.deep.equal(new Set(CHROME_EXPECTED_EXTENSIONS));
-
-        // Verify no extra or missing extensions
+        expect(new Set(extensions)).to.deep.equal(new Set(CHROME_EXPECTED_EXTENSIONS));
         expect(extensions).to.have.length(CHROME_EXPECTED_EXTENSIONS.length);
-    });
+    }));
 
-    it('should send only uncompressed EC point format', async () => {
+    // Requires OpenSSL EC point format fix (OpenSSL PR 26990)
+    it('should send only uncompressed EC point format', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, , , , ecPointFormats] = hello.fingerprintData;
 
-        // Browsers send only [0] (uncompressed). OpenSSL currently sends
-        // [0, 1, 2] (uncompressed, ansiX962_compressed_prime, ansiX962_compressed_char2).
         expect(ecPointFormats).to.deep.equal([0]);
-    });
+    }));
 
-    it('should match Chrome JA4 fingerprint', async () => {
+    // Depends on extensions and EC point formats being correct
+    it('should match Chrome JA4 fingerprint', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja4).to.equal(CHROME_EXPECTED_JA4);
-    });
+    }));
 
-    it('should match Chrome JA3 fingerprint', async () => {
+    it('should match Chrome JA3 fingerprint', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja3).to.equal(CHROME_EXPECTED_JA3);
-    });
+    }));
 });

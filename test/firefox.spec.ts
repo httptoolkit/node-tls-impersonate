@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello } from './test-helpers.js';
+import { captureClientHello, expectedFailure } from './test-helpers.js';
 
 // Firefox 133+ ClientHello spec
 const firefoxSpec: ClientHelloSpec = {
@@ -55,11 +55,7 @@ const FIREFOX_EXPECTED_JA4 = 't13d1718h2_5b57614c22b0_1ae7ba31360c';
 describe('Firefox TLS fingerprint impersonation', () => {
     it('should match Firefox cipher suites exactly', async () => {
         const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, ciphers] = hello.fingerprintData;
 
         expect(ciphers).to.deep.equal([
@@ -72,11 +68,7 @@ describe('Firefox TLS fingerprint impersonation', () => {
 
     it('should match Firefox signature algorithms exactly', async () => {
         const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, , , , , sigAlgorithms] = hello.fingerprintData;
 
         expect(sigAlgorithms).to.deep.equal([
@@ -89,64 +81,43 @@ describe('Firefox TLS fingerprint impersonation', () => {
 
     it('should match Firefox supported groups exactly', async () => {
         const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, , , groups] = hello.fingerprintData;
 
         expect(groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018, 0x0019, 0x0100, 0x0101]);
     });
 
-    it('should match Firefox extensions exactly', async () => {
+    // Requires Node certificate compression support (Node PR 62217)
+    it('should match Firefox extensions exactly', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, , extensions] = hello.fingerprintData;
-        const extSet = new Set(extensions);
 
-        // Must have exactly the expected extensions
-        expect(extSet).to.deep.equal(new Set(FIREFOX_EXPECTED_EXTENSIONS));
-
-        // Verify no extra or missing extensions
+        expect(new Set(extensions)).to.deep.equal(new Set(FIREFOX_EXPECTED_EXTENSIONS));
         expect(extensions).to.have.length(FIREFOX_EXPECTED_EXTENSIONS.length);
-    });
+    }));
 
-    it('should send only uncompressed EC point format', async () => {
+    // Requires OpenSSL EC point format fix (OpenSSL PR 26990)
+    it('should send only uncompressed EC point format', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
-
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, , , , ecPointFormats] = hello.fingerprintData;
 
-        // Browsers send only [0] (uncompressed). OpenSSL currently sends
-        // [0, 1, 2] (uncompressed, ansiX962_compressed_prime, ansiX962_compressed_char2).
         expect(ecPointFormats).to.deep.equal([0]);
-    });
+    }));
 
-    it('should match Firefox JA4 fingerprint', async () => {
+    // Depends on extensions and EC point formats being correct
+    it('should match Firefox JA4 fingerprint', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja4).to.equal(FIREFOX_EXPECTED_JA4);
-    });
+    }));
 
-    it('should match Firefox JA3 fingerprint', async () => {
+    it('should match Firefox JA3 fingerprint', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
-        });
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja3).to.equal(FIREFOX_EXPECTED_JA3);
-    });
+    }));
 });

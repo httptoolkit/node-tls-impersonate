@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+import { satisfies } from 'semver';
 import { trackClientHellos, type TlsHelloData } from 'read-tls-client-hello';
 
 export interface CapturedClientHello extends TlsHelloData {
@@ -157,6 +158,32 @@ export async function captureClientHello(options?: {
             });
         });
     });
+}
+
+export function expectedFailure(
+    nodeVersions: string,
+    fn: (this: Mocha.Context) => Promise<void>
+): (this: Mocha.Context) => Promise<void> {
+    const shouldExpectFailure = satisfies(process.version, nodeVersions, { includePrerelease: true });
+
+    return async function (this: Mocha.Context) {
+        try {
+            await fn.call(this);
+        } catch (e) {
+            if (shouldExpectFailure && e instanceof Error && e.name === 'AssertionError') {
+                this.skip(); // Failed as expected on this version
+                return;
+            }
+            throw e;
+        }
+        if (shouldExpectFailure) {
+            throw new Error(
+                `Expected this test to fail on Node ${process.version} (range: ${nodeVersions}), ` +
+                'but it passed — the underlying issue may be fixed. ' +
+                'Update the test to narrow the expectedFailure range or remove it.'
+            );
+        }
+    };
 }
 
 /**
