@@ -1,16 +1,16 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello, formatClientHello } from './test-helpers.js';
+import { captureClientHello } from './test-helpers.js';
 
 describe('Baseline impersonation', () => {
-    it('round-trip: impersonating Node.js defaults reproduces the same cipher/sigalg/group sets', async () => {
+    it('round-trip: impersonating Node.js defaults reproduces the same fingerprint data', async () => {
         // Capture default Node.js ClientHello
         const defaultHello = await captureClientHello({
             ALPNProtocols: ['h2', 'http/1.1'],
         });
 
-        const [, ciphers, extensions, groups, , sigAlgorithms] = defaultHello.fingerprintData;
+        const [, ciphers, extensions, groups, ecPointFormats, sigAlgorithms] = defaultHello.fingerprintData;
 
         // Build spec from captured (GREASE-filtered) data
         const spec: ClientHelloSpec = {
@@ -29,17 +29,22 @@ describe('Baseline impersonation', () => {
             ...connectOptions,
         });
 
-        const [, impCiphers, , impGroups, , impSigAlgs] = impersonatedHello.fingerprintData;
+        const [, impCiphers, impExtensions, impGroups, impEcPointFormats, impSigAlgs] =
+            impersonatedHello.fingerprintData;
 
-        console.log('\n--- Default Node.js ---');
-        console.log(formatClientHello(defaultHello));
-        console.log('\n--- Impersonated ---');
-        console.log(formatClientHello(impersonatedHello));
+        // All fields should match exactly, preserving order
+        expect(impCiphers).to.deep.equal(ciphers);
+        expect(impSigAlgs).to.deep.equal(sigAlgorithms);
+        expect(impGroups).to.deep.equal(groups);
+        expect(impEcPointFormats).to.deep.equal(ecPointFormats);
 
-        // Cipher, sigalg, and group sets should match
-        expect(new Set(impCiphers)).to.deep.equal(new Set(ciphers));
-        expect(new Set(impSigAlgs)).to.deep.equal(new Set(sigAlgorithms));
-        expect(new Set(impGroups)).to.deep.equal(new Set(groups));
+        // Extension set should match (order may differ due to OpenSSL internals)
+        expect(new Set(impExtensions)).to.deep.equal(new Set(extensions));
+        expect(impExtensions).to.have.length(extensions.length);
+
+        // JA3 and JA4 should both match
+        expect(impersonatedHello.ja3).to.equal(defaultHello.ja3);
+        expect(impersonatedHello.ja4).to.equal(defaultHello.ja4);
     });
 
     it('SHA-1 sigalgs automatically enable @SECLEVEL=0', async () => {
@@ -71,11 +76,10 @@ describe('Baseline impersonation', () => {
         });
 
         const [, , , , , sigAlgorithms] = hello.fingerprintData;
-        const sigAlgSet = new Set(sigAlgorithms);
 
         // SHA-1 sigalgs should be present
-        expect(sigAlgSet.has(0x0203), 'ecdsa_sha1').to.be.true;
-        expect(sigAlgSet.has(0x0201), 'rsa_pkcs1_sha1').to.be.true;
+        expect(sigAlgorithms).to.include(0x0203, 'ecdsa_sha1');
+        expect(sigAlgorithms).to.include(0x0201, 'rsa_pkcs1_sha1');
     });
 
     it('custom (non-predefined) extensions appear in ClientHello', async () => {
@@ -176,10 +180,7 @@ describe('Baseline impersonation', () => {
             ...opts2,
         });
 
-        // The hello with GREASE extensions should report more total extensions
-        // We can't verify GREASE in fingerprintData (stripped), but the overall
-        // extension count in the raw ClientHello should differ.
-        // At minimum, verify the non-GREASE set is the same
+        // The non-GREASE extension set should be the same
         const [, , extensions2] = hello2.fingerprintData;
         expect(new Set(extensions)).to.deep.equal(new Set(extensions2));
     });
