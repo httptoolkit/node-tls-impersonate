@@ -232,6 +232,7 @@ function parseCertCompressionAlgorithms(data: Buffer): number[] {
 const EXT_STATUS_REQUEST = 5;
 const EXT_ENCRYPT_THEN_MAC = 22;
 const EXT_COMPRESS_CERTIFICATE = 27;
+const EXT_SESSION_TICKET = 35;
 const EXT_POST_HANDSHAKE_AUTH = 49;
 
 // ─── Main Function ───────────────────────────────────────────────────────────
@@ -246,13 +247,12 @@ export function impersonate(
     spec: ClientHelloSpec,
     options?: tls.SecureContextOptions
 ): ImpersonateResult {
-    // 1. Map cipher suites to OpenSSL names, preserving order
     const tls13Ciphers: string[] = [];
     const tls12Ciphers: string[] = [];
     let wantScsv = false;
     let hasLegacyCipher = false;
     for (const id of spec.cipherSuites) {
-        if (isGreaseValue(id)) continue; // GREASE ciphers can't be added to OpenSSL
+        if (isGreaseValue(id)) continue;
         if (id === 0x00ff || id === 0x5600) {
             // SCSV values — OpenSSL adds these automatically under certain conditions.
             // We track the request and configure minVersion/secLevel to trigger it.
@@ -272,10 +272,9 @@ export function impersonate(
         }
     }
 
-    // 2. Map supported groups to OpenSSL curve names, preserving order
     const groups: string[] = [];
     for (const id of spec.supportedGroups) {
-        if (isGreaseValue(id)) continue; // GREASE groups can't be added to OpenSSL
+        if (isGreaseValue(id)) continue;
         const name = GROUP_NAMES[id];
         if (!name) {
             console.warn(`tls-impersonate: unknown supported group 0x${id.toString(16).padStart(4, '0')}, skipping`);
@@ -284,7 +283,6 @@ export function impersonate(
         groups.push(name);
     }
 
-    // 3. Map signature algorithms to OpenSSL names, preserving order
     const sigalgs: string[] = [];
     let hasSha1 = false;
     for (const id of spec.signatureAlgorithms) {
@@ -297,14 +295,13 @@ export function impersonate(
         if (SHA1_SIGALG_IDS.has(id)) hasSha1 = true;
     }
 
-    // 4. Build cipher string
-    //    @SECLEVEL=0 is needed for SHA-1 sigalgs, legacy ciphers (3DES),
-    //    and to trigger SCSV when the spec includes TLS_EMPTY_RENEGOTIATION_INFO_SCSV.
+    // @SECLEVEL=0 is needed for SHA-1 sigalgs, legacy ciphers (3DES),
+    // and to trigger SCSV when the spec includes TLS_EMPTY_RENEGOTIATION_INFO_SCSV.
     const needSecLevel0 = hasSha1 || hasLegacyCipher || wantScsv;
     const cipherString = tls12Ciphers.join(':') + (needSecLevel0 ? ':@SECLEVEL=0' : '');
     const ciphersuitesString = tls13Ciphers.join(':');
 
-    // 5. Scan extensions for config-driven features
+    // Scan extensions for config-driven features
     const extTypes = new Set(spec.extensions.map(e => e.type));
     const connectOpts: ImpersonateResult['connectOptions'] = {};
 
@@ -315,11 +312,9 @@ export function impersonate(
         connectOpts.ALPNProtocols = spec.alpnProtocols;
     }
 
-    // 6. Create SecureContext with mapped cipher/sigalg/group strings
-    //    OpenSSL only adds SCSV (0x00ff) when @SECLEVEL=0 and minVersion <= TLSv1.
-    //    We set minVersion='TLSv1' to trigger SCSV inclusion, then immediately
-    //    apply SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 to prevent actual negotiation
-    //    of those old versions (the cipher list is already committed at that point).
+    // OpenSSL only adds SCSV (0x00ff) when @SECLEVEL=0 and minVersion <= TLSv1.
+    // We set minVersion='TLSv1' to trigger SCSV inclusion, then immediately
+    // block TLSv1.0/1.1 negotiation via SSL_OP flags.
     const ctx = tls.createSecureContext({
         ...options,
         ciphers: cipherString,
@@ -329,7 +324,6 @@ export function impersonate(
         maxVersion: 'TLSv1.3',
     });
 
-    // 6b. Block TLSv1.0/1.1 negotiation while keeping SCSV in the cipher list
     if (wantScsv) {
         setOptions(ctx,
             crypto.constants.SSL_OP_NO_TLSv1 |
@@ -337,23 +331,25 @@ export function impersonate(
         );
     }
 
-    // 7. Set TLS 1.3 ciphersuite order (Node.js silently ignores the
-    //    ciphersuites option in createSecureContext)
+    // We build TLS 1.2 and 1.3 cipher strings separately to preserve order,
+    // but Node's ciphers option combines them (splitting on TLS_ prefix).
+    // Call setCipherSuites directly to set the TLS 1.3 order independently.
     if (ciphersuitesString) {
         (ctx as any).context.setCipherSuites(ciphersuitesString);
     }
 
-    // 8. Disable encrypt_then_mac if absent from spec
     if (!extTypes.has(EXT_ENCRYPT_THEN_MAC)) {
         setOptions(ctx, crypto.constants.SSL_OP_NO_ENCRYPT_THEN_MAC);
     }
 
-    // 9. Enable post-handshake auth if present in spec
+    if (!extTypes.has(EXT_SESSION_TICKET)) {
+        setOptions(ctx, crypto.constants.SSL_OP_NO_TICKET);
+    }
+
     if (extTypes.has(EXT_POST_HANDSHAKE_AUTH)) {
         enablePostHandshakeAuth(ctx);
     }
 
-    // 10. Enable certificate compression if present in spec
     if (extTypes.has(EXT_COMPRESS_CERTIFICATE)) {
         const ext27 = spec.extensions.find(e => e.type === EXT_COMPRESS_CERTIFICATE);
         const algorithms = ext27?.data
@@ -366,11 +362,11 @@ export function impersonate(
         }
     }
 
-    // 11. Register extensions in spec order
+    // Register custom extensions. Predefined extensions are handled by OpenSSL
+    // via the config above; some (like SCT=18) can still be added as custom
+    // overrides if they have data.
     for (const ext of spec.extensions) {
         if (isPredefinedExtension(ext.type)) {
-            // Predefined extensions are handled by OpenSSL via config above.
-            // Some (like SCT=18) can still be registered as custom overrides.
             const data = ext.data ?? getDefaultExtensionData(ext.type);
             if (data !== undefined) {
                 try {
@@ -386,7 +382,6 @@ export function impersonate(
             continue;
         }
 
-        // Non-predefined: must be added via custom extension API
         const data = ext.data ?? getDefaultExtensionData(ext.type);
         if (data === undefined) {
             throw new Error(
