@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello } from './test-helpers.js';
+import { captureClientHello, runRealWorldTests } from './test-helpers.js';
 
 // Curl 8.5 / OpenSSL 3.0.13 default ClientHello parameters
 const curlSpec: ClientHelloSpec = {
@@ -115,4 +115,6 @@ describe('Curl TLS fingerprint impersonation', () => {
 
         expect(hello.ja3).to.equal(CURL_EXPECTED_JA3);
     });
+
+    runRealWorldTests('Curl', curlSpec);
 });

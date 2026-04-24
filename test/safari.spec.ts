@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello, expectedFailure } from './test-helpers.js';
+import { captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
 
 // Safari 26.0 (macOS Tahoe) ClientHello spec, derived from:
 // https://github.com/lexiforest/curl-impersonate/blob/main/bin/curl_safari260
@@ -130,4 +130,6 @@ describe('Safari TLS fingerprint impersonation', () => {
 
         expect(hello.ja3).to.equal(SAFARI_EXPECTED_JA3);
     }));
+
+    runRealWorldTests('Safari', safariSpec);
 });

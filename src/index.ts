@@ -236,11 +236,31 @@ function generateGreaseEchPayload(): Buffer {
     return buf;
 }
 
-/** Build application_settings (ALPS) extension data with an empty protocol
- *  list. ALPS activates only when the server's chosen ALPN matches a name in
- *  this list, so an empty list guarantees ALPS never negotiates */
+/** Generate a random ALPN-style protocol name that shouldn't collide with any
+ *  existing registration. IANA's longest registered ALPN is ~10 bytes; we
+ *  use 16-24 random lowercase-alphanumeric bytes, safely longer than any
+ *  real ALPN. Randomized length adds variability per connection. */
+function generateGreaseProtocolName(): Buffer {
+    const len = 16 + Math.floor(Math.random() * 9); // 16..24
+    const charset = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    const buf = Buffer.alloc(len);
+    for (let i = 0; i < len; i++) {
+        buf[i] = charset.charCodeAt(Math.floor(Math.random() * charset.length));
+    }
+    return buf;
+}
+
+/** Build application_settings (ALPS) extension data with a random GREASE
+ *  protocol name. ALPS activates only when the server's chosen ALPN matches
+ *  a name in this list — long random name shouldn't match any real ALPN
+ *  so ALPS should never negotiate. */
 function generateAlpsPayload(): Buffer {
-    return Buffer.from([0x00, 0x00]); // zero-length protocol list
+    const name = generateGreaseProtocolName();
+    const buf = Buffer.alloc(2 + 1 + name.length);
+    buf.writeUInt16BE(1 + name.length, 0); // outer list length
+    buf.writeUInt8(name.length, 2);        // inner protocol name length
+    name.copy(buf, 3);
+    return buf;
 }
 
 /** Get default extension data for known extension types where data is optional */
@@ -411,6 +431,17 @@ export function impersonate(
         }
     }
 
+    // For server responses to our custom extensions. Servers may echo back
+    // extensions (e.g. ECH retry_configs in EncryptedExtensions per RFC 9849,
+    // ALPS settings, DC credentials in Certificate, record_size_limit in EE).
+    // Without these contexts, OpenSSL rejects the server's response with a
+    // "bad extension" error, failing the handshake.
+    const customExtContext = constants.SSL_EXT_CLIENT_HELLO
+        | constants.SSL_EXT_TLS1_3_SERVER_HELLO
+        | constants.SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS
+        | constants.SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST
+        | constants.SSL_EXT_TLS1_3_CERTIFICATE;
+
     // Register custom extensions. Predefined extensions are handled by OpenSSL
     // via the config above; some (like SCT=18) can still be added as custom
     // overrides if they have data.
@@ -421,7 +452,7 @@ export function impersonate(
                 try {
                     addCustomExtension(ctx, {
                         extensionType: ext.type,
-                        context: constants.SSL_EXT_CLIENT_HELLO,
+                        context: customExtContext,
                         data,
                     });
                 } catch {
@@ -440,7 +471,7 @@ export function impersonate(
         }
         addCustomExtension(ctx, {
             extensionType: ext.type,
-            context: constants.SSL_EXT_CLIENT_HELLO,
+            context: customExtContext,
             data,
         });
     }

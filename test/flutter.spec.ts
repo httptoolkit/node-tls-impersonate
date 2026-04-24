@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello, expectedFailure } from './test-helpers.js';
+import { captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
 
 // Flutter / Dart 3.11 HTTP client ClientHello, captured from an Android 16 device.
 const dartSpec: ClientHelloSpec = {
@@ -110,4 +110,6 @@ describe('Flutter TLS fingerprint impersonation', () => {
 
         expect(hello.ja3).to.equal(DART_EXPECTED_JA3);
     }));
+
+    runRealWorldTests('Flutter', dartSpec);
 });

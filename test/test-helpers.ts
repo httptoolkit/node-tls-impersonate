@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import { satisfies } from 'semver';
 import { trackClientHellos, type TlsHelloData } from 'read-tls-client-hello';
+import { impersonate, type ClientHelloSpec } from '../src/index.js';
 
 export interface CapturedClientHello extends TlsHelloData {
     ja3: string;
@@ -158,6 +159,77 @@ export async function captureClientHello(options?: {
             });
         });
     });
+}
+
+/**
+ * - Google: BoringSSL, ALPS-supporting, very strict
+ * - Cloudflare: ECH-supporting, sends retry_configs on GREASE ECH
+ * - GitHub: Common production target (AWS/ALB)
+ */
+const REAL_WORLD_TARGETS = [
+    'www.google.com',
+    'www.cloudflare.com',
+    'github.com',
+];
+
+export function runRealWorldTests(name: string, spec: ClientHelloSpec): void {
+    for (const host of REAL_WORLD_TARGETS) {
+        it(`${name} spec should complete TLS handshake with ${host}`, async function () {
+            const { secureContext, connectOptions } = impersonate(spec);
+            const result = await verifyRemoteHandshake.call(this, host, {
+                secureContext,
+                ...connectOptions,
+            });
+            if (!result.protocol) {
+                throw new Error(`No protocol negotiated with ${host}`);
+            }
+        });
+    }
+}
+
+export async function verifyRemoteHandshake(
+    this: Mocha.Context | void,
+    hostname: string,
+    options: {
+        secureContext?: tls.SecureContext;
+        ALPNProtocols?: string[];
+        requestOCSP?: boolean;
+    }
+): Promise<{ protocol: string | null; alpn: string | false | null }> {
+    const result = await new Promise<
+        | { ok: true; protocol: string | null; alpn: string | false | null }
+        | { ok: false; error: string }
+    >((resolve) => {
+        const timer = setTimeout(() => resolve({ ok: false, error: 'timeout' }), 8000);
+        const socket = tls.connect({
+            host: hostname,
+            port: 443,
+            servername: hostname,
+            ...options,
+        });
+        socket.on('secureConnect', () => {
+            clearTimeout(timer);
+            const protocol = socket.getProtocol();
+            const alpn = socket.alpnProtocol;
+            socket.destroy();
+            resolve({ ok: true, protocol, alpn });
+        });
+        socket.on('error', (e: unknown) => {
+            clearTimeout(timer);
+            const err = e as { code?: string; message?: string };
+            socket.destroy();
+            resolve({ ok: false, error: err.code || err.message || 'unknown' });
+        });
+    });
+
+    if (result.ok) return result;
+
+    // Network-level errors → skip (not our problem)
+    const networkErrors = ['ENOTFOUND', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'timeout'];
+    if (networkErrors.includes(result.error) && this && 'skip' in this) {
+        this.skip();
+    }
+    throw new Error(`Handshake to ${hostname} failed: ${result.error}`);
 }
 
 export function expectedFailure(

@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello, expectedFailure } from './test-helpers.js';
+import { captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
 
 // OkHttp 4.x on Android (Conscrypt/BoringSSL) for a fresh connection with default ALPN
 const okhttpSpec: ClientHelloSpec = {
@@ -113,4 +113,6 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
 
         expect(hello.ja3).to.equal(OKHTTP_EXPECTED_JA3);
     }));
+
+    runRealWorldTests('OkHttp', okhttpSpec);
 });
