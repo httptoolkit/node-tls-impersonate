@@ -214,18 +214,33 @@ function generateGreaseDelegatedCredentialsPayload(): Buffer {
     return buf;
 }
 
-/** Generate a random GREASE ECH payload */
+/** Generate a GREASE ECH (encrypted_client_hello) payload matching Chrome/
+ *  BoringSSL behavior per RFC 9849 §6.2.
+ */
 function generateGreaseEchPayload(): Buffer {
-    return Buffer.from([
-        0xfe, 0x0d, // ECH version
-        0x00,       // ECH type: outer
-        0x01,       // config_id
-        0x00, 0x20, // KEM id: DHKEM(X25519, HKDF-SHA256)
-        0x00, 0x20, // enc length: 32 bytes
-        ...crypto.randomBytes(32),
-        0x00, 0x10, // payload length: 16 bytes
-        ...crypto.randomBytes(16),
-    ]);
+    const aead = Math.random() < 0.5 ? 0x0001 : 0x0003; // AES-128-GCM or ChaCha20
+    const encLen = 32;
+    const payloadBase = 32 * (4 + Math.floor(Math.random() * 4)); // 128, 160, 192, or 224
+    const payloadLen = payloadBase + 16; // AEAD tag overhead
+
+    const buf = Buffer.alloc(1 + 4 + 1 + 2 + encLen + 2 + payloadLen);
+    let off = 0;
+    buf.writeUInt8(0x00, off); off += 1;              // type: outer
+    buf.writeUInt16BE(0x0001, off); off += 2;         // KDF: HKDF-SHA256
+    buf.writeUInt16BE(aead, off); off += 2;           // AEAD: random
+    buf.writeUInt8(crypto.randomBytes(1)[0], off); off += 1; // config_id
+    buf.writeUInt16BE(encLen, off); off += 2;
+    crypto.randomFillSync(buf, off, encLen); off += encLen;
+    buf.writeUInt16BE(payloadLen, off); off += 2;
+    crypto.randomFillSync(buf, off, payloadLen);
+    return buf;
+}
+
+/** Build application_settings (ALPS) extension data with an empty protocol
+ *  list. ALPS activates only when the server's chosen ALPN matches a name in
+ *  this list, so an empty list guarantees ALPS never negotiates */
+function generateAlpsPayload(): Buffer {
+    return Buffer.from([0x00, 0x00]); // zero-length protocol list
 }
 
 /** Get default extension data for known extension types where data is optional */
@@ -235,7 +250,7 @@ function getDefaultExtensionData(type: number): Buffer | undefined {
         case 18: return Buffer.alloc(0); // SCT: empty
         case 28: return Buffer.from([0x40, 0x01]); // record_size_limit: 16385
         case 34: return generateGreaseDelegatedCredentialsPayload();
-        case 17613: return Buffer.from([0x00, 0x02, 0x68, 0x32]); // ALPS: "h2"
+        case 17613: return generateAlpsPayload();
         case 65037: return generateGreaseEchPayload(); // ECH GREASE
         default: return undefined;
     }

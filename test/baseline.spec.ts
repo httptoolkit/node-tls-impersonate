@@ -91,7 +91,7 @@ describe('Baseline impersonation', () => {
                 { type: 28, data: Buffer.from([0x40, 0x01]) }, // record_size_limit
                 { type: 34, data: Buffer.from([0x00, 0x04, 0x1a, 0x1a, 0x4a, 0x4a]) }, // delegated_credentials with GREASE schemes
 
-                { type: 17613, data: Buffer.from([0x00, 0x02, 0x68, 0x32]) }, // ALPS
+                { type: 17613, data: Buffer.from([0x00, 0x00]) }, // ALPS: empty list
             ],
             supportedGroups: [0x001d, 0x0017],
             signatureAlgorithms: [0x0403, 0x0804, 0x0401],
