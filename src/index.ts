@@ -188,6 +188,32 @@ function isGreaseValue(id: number): boolean {
     return (id & 0x0f0f) === 0x0a0a;
 }
 
+/** All 16 GREASE codepoints per RFC 8701 */
+const GREASE_VALUES = [
+    0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a,
+    0x8a8a, 0x9a9a, 0xaaaa, 0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
+];
+
+/** Build delegated_credentials extension data with GREASE sig schemes.
+ *  Using GREASE values means servers ignore the advertised schemes, so
+ *  the server won't actually send a delegated credential we can't validate.
+ *  Picks 3-4 random GREASE codepoints for variability. */
+function generateGreaseDelegatedCredentialsPayload(): Buffer {
+    const count = 3 + Math.floor(Math.random() * 2); // 3 or 4
+    const pool = [...GREASE_VALUES];
+    const schemes: number[] = [];
+    for (let i = 0; i < count; i++) {
+        const idx = Math.floor(Math.random() * pool.length);
+        schemes.push(pool.splice(idx, 1)[0]);
+    }
+    const buf = Buffer.alloc(2 + schemes.length * 2);
+    buf.writeUInt16BE(schemes.length * 2, 0);
+    for (let i = 0; i < schemes.length; i++) {
+        buf.writeUInt16BE(schemes[i], 2 + i * 2);
+    }
+    return buf;
+}
+
 /** Generate a random GREASE ECH payload */
 function generateGreaseEchPayload(): Buffer {
     return Buffer.from([
@@ -208,9 +234,7 @@ function getDefaultExtensionData(type: number): Buffer | undefined {
     switch (type) {
         case 18: return Buffer.alloc(0); // SCT: empty
         case 28: return Buffer.from([0x40, 0x01]); // record_size_limit: 16385
-        case 34: return Buffer.from([ // delegated_credentials: common Firefox scheme list
-            0x00, 0x08, 0x04, 0x03, 0x05, 0x03, 0x06, 0x03, 0x02, 0x03,
-        ]);
+        case 34: return generateGreaseDelegatedCredentialsPayload();
         case 17613: return Buffer.from([0x00, 0x02, 0x68, 0x32]); // ALPS: "h2"
         case 65037: return generateGreaseEchPayload(); // ECH GREASE
         default: return undefined;
