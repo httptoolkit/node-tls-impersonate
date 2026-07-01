@@ -87,8 +87,9 @@ describe('Chrome TLS fingerprint impersonation', () => {
         expect(groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018]);
     });
 
-    // Requires Node certificate compression support (pending Node PR 62217)
-    it('should match Chrome extensions exactly', expectedFailure('*', async () => {
+    // Requires Node's bundled OpenSSL to be built with certificate compression
+    // enabled (ext 27). First available in Node 26.4.0; earlier builds omit it.
+    it('should match Chrome extensions exactly', expectedFailure('<26.4.0', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
         const [, , extensions] = hello.fingerprintData;
@@ -106,8 +107,9 @@ describe('Chrome TLS fingerprint impersonation', () => {
         expect(ecPointFormats).to.deep.equal([0]);
     }));
 
-    // Depends on extensions and EC point formats being correct
-    it('should match Chrome JA4 fingerprint', expectedFailure('*', async () => {
+    // Depends on the correct extension set (certificate compression, Node 26.4.0+).
+    // Unlike JA3, JA4 does not hash EC point formats, so it passes without OpenSSL PR 26990.
+    it('should match Chrome JA4 fingerprint', expectedFailure('<26.4.0', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
 
