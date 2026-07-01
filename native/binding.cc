@@ -181,11 +181,11 @@ static int CustomExtParseCallback(SSL* s,
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-// Resolve SSL_CTX* from a SecureContext object.
-//
-// On newer Node builds (v26+), uses node::crypto::GetSSLCtx which is resolved
-// via dlsym at runtime. On older builds without that export, falls back to
-// extracting the _external property from the native context object.
+// Resolve SSL_CTX* from a SecureContext via node::crypto::GetSSLCtx, a public
+// API exported since Node 24.15.0. Resolved with dlsym so that unsupported
+// runtimes throw a clean JS exception rather than failing to load the addon.
+// GetSSLCtx unwraps the outer tls.createSecureContext() wrapper itself and
+// returns nullptr for values that are not a SecureContext.
 using GetSSLCtxFunc = SSL_CTX* (*)(v8::Local<v8::Context>, v8::Local<v8::Value>);
 
 static GetSSLCtxFunc ResolveGetSSLCtx() {
@@ -195,41 +195,17 @@ static GetSSLCtxFunc ResolveGetSSLCtx() {
           "_ZN4node6crypto9GetSSLCtxEN2v85LocalINS1_7ContextEEENS2_INS1_5ValueEEE"));
 }
 
-static SSL_CTX* ExtractSSLCtxFromExternal(Local<Context> context,
-                                          Local<Value> value) {
-  Isolate* isolate = Isolate::GetCurrent();
-
-  // If given the outer JS wrapper (from tls.createSecureContext()),
-  // unwrap .context to get the native SecureContext first.
-  if (value->IsObject()) {
-    Local<Object> obj = value.As<Object>();
-    Local<String> ctx_key = String::NewFromUtf8Literal(isolate, "context");
-    Local<Value> inner;
-    if (obj->Get(context, ctx_key).ToLocal(&inner) && inner->IsObject()) {
-      // Found .context — use the inner native SecureContext
-      obj = inner.As<Object>();
-    }
-    Local<String> ext_key = String::NewFromUtf8Literal(isolate, "_external");
-    Local<Value> ext_val;
-    if (obj->Get(context, ext_key).ToLocal(&ext_val) && ext_val->IsExternal()) {
-      return static_cast<SSL_CTX*>(ext_val.As<v8::External>()->Value());
-    }
-  }
-
-  if (value->IsExternal()) {
-    return static_cast<SSL_CTX*>(value.As<v8::External>()->Value());
-  }
-
-  isolate->ThrowException(Exception::TypeError(
-      String::NewFromUtf8Literal(isolate,
-          "Argument must be a native SecureContext object")));
-  return nullptr;
-}
-
 static SSL_CTX* GetSSLCtx(Local<Context> context, Local<Value> value) {
   static GetSSLCtxFunc fn = ResolveGetSSLCtx();
-  if (fn) return fn(context, value);
-  return ExtractSSLCtxFromExternal(context, value);
+  if (fn == nullptr) {
+    Isolate* isolate = Isolate::GetCurrent();
+    isolate->ThrowException(Exception::Error(
+        String::NewFromUtf8Literal(isolate,
+            "tls-impersonate requires Node.js >= 24.15.0 "
+            "(node::crypto::GetSSLCtx is unavailable in this runtime)")));
+    return nullptr;
+  }
+  return fn(context, value);
 }
 
 // ─── Exported functions ──────────────────────────────────────────────────────

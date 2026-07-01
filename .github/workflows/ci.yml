@@ -14,9 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         node-version:
-          - 22    # Uses _external fallback for SSL_CTX
-          - 24    # 24.15+ exports GetSSLCtx
-          - latest
+          - 24      # Minimum supported: 24.15+ exports node::crypto::GetSSLCtx
+          - latest  # Full fidelity (cert compression) from 26.4
 
     steps:
       - uses: actions/checkout@v4
