@@ -58,9 +58,8 @@ describe('Chrome TLS fingerprint impersonation', () => {
     it('should match Chrome cipher suites exactly', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, ciphers] = hello.fingerprintData;
 
-        expect(ciphers).to.deep.equal([
+        expect(hello.ciphers).to.deep.equal([
             0x1301, 0x1302, 0x1303,
             0xc02b, 0xc02f, 0xc02c, 0xc030,
             0xcca9, 0xcca8,
@@ -72,9 +71,8 @@ describe('Chrome TLS fingerprint impersonation', () => {
     it('should match Chrome signature algorithms exactly', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , , , , sigAlgorithms] = hello.fingerprintData;
 
-        expect(sigAlgorithms).to.deep.equal([
+        expect(hello.signatureAlgorithms).to.deep.equal([
             0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601,
         ]);
     });
@@ -82,9 +80,8 @@ describe('Chrome TLS fingerprint impersonation', () => {
     it('should match Chrome supported groups exactly', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , , groups] = hello.fingerprintData;
 
-        expect(groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018]);
+        expect(hello.groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018]);
     });
 
     // Requires Node's bundled OpenSSL to be built with certificate compression
@@ -92,19 +89,17 @@ describe('Chrome TLS fingerprint impersonation', () => {
     it('should match Chrome extensions exactly', expectedFailure('<26.4.0', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , extensions] = hello.fingerprintData;
 
-        expect(new Set(extensions)).to.deep.equal(new Set(CHROME_EXPECTED_EXTENSIONS));
-        expect(extensions).to.have.length(CHROME_EXPECTED_EXTENSIONS.length);
+        expect(new Set(hello.extensions)).to.deep.equal(new Set(CHROME_EXPECTED_EXTENSIONS));
+        expect(hello.extensions).to.have.length(CHROME_EXPECTED_EXTENSIONS.length);
     }));
 
     // Requires OpenSSL EC point format fix (OpenSSL PR 26990)
     it('should send only uncompressed EC point format', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(chromeSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , , , ecPointFormats] = hello.fingerprintData;
 
-        expect(ecPointFormats).to.deep.equal([0]);
+        expect(hello.ecPointFormats).to.deep.equal([0]);
     }));
 
     // Depends on the correct extension set (certificate compression, Node 26.4.0+).

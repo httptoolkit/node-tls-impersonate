@@ -4,12 +4,25 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import { satisfies } from 'semver';
-import { trackClientHellos, type TlsHelloData } from 'read-tls-client-hello';
+import { trackClientHellos, getExtensionData } from 'read-tls-client-hello';
 import { impersonate, type ClientHelloSpec } from '../src/index.js';
 
-export interface CapturedClientHello extends TlsHelloData {
+/** Fingerprint-oriented view of a captured ClientHello, derived from
+ *  read-tls-client-hello v2's raw message. The array fields are GREASE-filtered
+ *  to match JA3/JA4 fingerprint semantics; use `raw` for the unfiltered message
+ *  (including GREASE and per-extension data). */
+export interface CapturedClientHello {
+    version: number;
+    ciphers: number[];
+    extensions: number[];
+    groups: number[];
+    ecPointFormats: number[];
+    signatureAlgorithms: number[];
     ja3: string;
     ja4: string;
+    serverName: string | undefined;
+    alpnProtocols: string[] | undefined;
+    raw: NonNullable<tls.TLSSocket['tlsClientHello']>;
 }
 
 interface SelfSignedCert {
@@ -88,6 +101,25 @@ function generateSelfSignedCert(): SelfSignedCert {
     }
 }
 
+function toCapturedHello(
+    hello: NonNullable<tls.TLSSocket['tlsClientHello']>
+): CapturedClientHello {
+    const noGrease = (ids: number[]) => ids.filter((id) => !isGreaseValue(id));
+    return {
+        version: hello.version,
+        ciphers: noGrease(hello.cipherSuites),
+        extensions: noGrease(hello.extensions.map((e) => e.id)),
+        groups: noGrease(getExtensionData(hello, 10)?.groups ?? []),
+        ecPointFormats: getExtensionData(hello, 11)?.formats ?? [],
+        signatureAlgorithms: noGrease(getExtensionData(hello, 13)?.algorithms ?? []),
+        ja3: hello.ja3,
+        ja4: hello.ja4,
+        serverName: getExtensionData(hello, 0)?.serverName,
+        alpnProtocols: getExtensionData(hello, 16)?.protocols,
+        raw: hello,
+    };
+}
+
 /**
  * Capture the TLS ClientHello fingerprint from a connection using a given SecureContext.
  *
@@ -130,7 +162,7 @@ export async function captureClientHello(options?: {
                 return;
             }
 
-            resolve(hello as CapturedClientHello);
+            resolve(toCapturedHello(hello));
         });
 
         server.on('tlsClientError', (err) => {
@@ -262,19 +294,19 @@ export function expectedFailure(
  * Format captured ClientHello data for readable logging
  */
 export function formatClientHello(hello: CapturedClientHello): string {
-    const [version, ciphers, extensions, groups, curveFormats, sigAlgorithms] = hello.fingerprintData;
+    const hex = (n: number) => '0x' + n.toString(16).padStart(4, '0');
 
     const lines = [
         `JA4: ${hello.ja4}`,
         `JA3: ${hello.ja3}`,
         `SNI: ${hello.serverName ?? '(none)'}`,
         `ALPN: ${hello.alpnProtocols?.join(', ') ?? '(none)'}`,
-        `TLS Version: 0x${version.toString(16).padStart(4, '0')}`,
-        `Ciphers (${ciphers.length}): ${ciphers.map(c => '0x' + c.toString(16).padStart(4, '0')).join(', ')}`,
-        `Extensions (${extensions.length}): ${extensions.map(e => `${e}(${extensionName(e)})`).join(', ')}`,
-        `Groups (${groups.length}): ${groups.map(g => '0x' + g.toString(16).padStart(4, '0')).join(', ')}`,
-        `Curve Formats: ${curveFormats.map(f => '0x' + f.toString(16)).join(', ')}`,
-        `Sig Algorithms (${sigAlgorithms.length}): ${sigAlgorithms.map(s => '0x' + s.toString(16).padStart(4, '0')).join(', ')}`,
+        `TLS Version: ${hex(hello.version)}`,
+        `Ciphers (${hello.ciphers.length}): ${hello.ciphers.map(hex).join(', ')}`,
+        `Extensions (${hello.extensions.length}): ${hello.extensions.map(e => `${e}(${extensionName(e)})`).join(', ')}`,
+        `Groups (${hello.groups.length}): ${hello.groups.map(hex).join(', ')}`,
+        `Curve Formats: ${hello.ecPointFormats.map(f => '0x' + f.toString(16)).join(', ')}`,
+        `Sig Algorithms (${hello.signatureAlgorithms.length}): ${hello.signatureAlgorithms.map(hex).join(', ')}`,
     ];
 
     return lines.join('\n');

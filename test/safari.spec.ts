@@ -68,9 +68,8 @@ describe('Safari TLS fingerprint impersonation', () => {
     it('should match Safari cipher suites exactly (including 3DES)', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, ciphers] = hello.fingerprintData;
 
-        expect(ciphers).to.deep.equal([
+        expect(hello.ciphers).to.deep.equal([
             0x1302, 0x1303, 0x1301,
             0xc02c, 0xc02b, 0xcca9,
             0xc030, 0xc02f, 0xcca8,
@@ -83,9 +82,8 @@ describe('Safari TLS fingerprint impersonation', () => {
     it('should match Safari signature algorithms exactly', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , , , , sigAlgorithms] = hello.fingerprintData;
 
-        expect(sigAlgorithms).to.deep.equal([
+        expect(hello.signatureAlgorithms).to.deep.equal([
             0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201,
         ]);
     });
@@ -93,28 +91,25 @@ describe('Safari TLS fingerprint impersonation', () => {
     it('should match Safari supported groups exactly', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , , groups] = hello.fingerprintData;
 
-        expect(groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018, 0x0019]);
+        expect(hello.groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018, 0x0019]);
     });
 
     it('should match Safari extensions exactly', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , extensions] = hello.fingerprintData;
-        const extSet = new Set(extensions);
+        const extSet = new Set(hello.extensions);
 
         expect(extSet).to.deep.equal(new Set(SAFARI_EXPECTED_EXTENSIONS));
-        expect(extensions).to.have.length(SAFARI_EXPECTED_EXTENSIONS.length);
+        expect(hello.extensions).to.have.length(SAFARI_EXPECTED_EXTENSIONS.length);
         expect(extSet.has(35), 'session_ticket (35) should be absent').to.be.false;
     }));
 
     it('should send only uncompressed EC point format', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , , , ecPointFormats] = hello.fingerprintData;
 
-        expect(ecPointFormats).to.deep.equal([0]);
+        expect(hello.ecPointFormats).to.deep.equal([0]);
     }));
 
     it('should match Safari JA4 fingerprint', expectedFailure('*', async () => {

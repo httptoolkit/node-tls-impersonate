@@ -52,12 +52,12 @@
     "@types/semver": "^7.7.1",
     "chai": "^6.2.2",
     "mocha": "^11.7.5",
+    "read-tls-client-hello": "^2.0.0",
     "semver": "^7.7.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "node-gyp-build": "^4.8.4",
-    "read-tls-client-hello": "^1.1.0"
+    "node-gyp-build": "^4.8.4"
   }
 }

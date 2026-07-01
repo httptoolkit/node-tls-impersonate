@@ -262,13 +262,11 @@ describe('Live fingerprint verification', function () {
             ALPNProtocols: ['h2', 'http/1.1'],
         });
 
-        const [, ciphers, extensions, groups, , sigAlgorithms] = defaultHello.fingerprintData;
-
         const spec: ClientHelloSpec = {
-            cipherSuites: ciphers,
-            extensions: extensions.map((type: number) => ({ type })),
-            supportedGroups: groups,
-            signatureAlgorithms: sigAlgorithms,
+            cipherSuites: defaultHello.ciphers,
+            extensions: defaultHello.extensions.map((type: number) => ({ type })),
+            supportedGroups: defaultHello.groups,
+            signatureAlgorithms: defaultHello.signatureAlgorithms,
             alpnProtocols: ['h2', 'http/1.1'],
         };
 

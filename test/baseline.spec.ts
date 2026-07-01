@@ -10,14 +10,12 @@ describe('Baseline impersonation', () => {
             ALPNProtocols: ['h2', 'http/1.1'],
         });
 
-        const [, ciphers, extensions, groups, ecPointFormats, sigAlgorithms] = defaultHello.fingerprintData;
-
-        // Build spec from captured (GREASE-filtered) data
+        // Build spec from the captured (GREASE-filtered) fingerprint fields
         const spec: ClientHelloSpec = {
-            cipherSuites: ciphers,
-            extensions: extensions.map(type => ({ type })),
-            supportedGroups: groups,
-            signatureAlgorithms: sigAlgorithms,
+            cipherSuites: defaultHello.ciphers,
+            extensions: defaultHello.extensions.map(type => ({ type })),
+            supportedGroups: defaultHello.groups,
+            signatureAlgorithms: defaultHello.signatureAlgorithms,
             alpnProtocols: ['h2', 'http/1.1'],
         };
 
@@ -29,18 +27,15 @@ describe('Baseline impersonation', () => {
             ...connectOptions,
         });
 
-        const [, impCiphers, impExtensions, impGroups, impEcPointFormats, impSigAlgs] =
-            impersonatedHello.fingerprintData;
-
         // All fields should match exactly, preserving order
-        expect(impCiphers).to.deep.equal(ciphers);
-        expect(impSigAlgs).to.deep.equal(sigAlgorithms);
-        expect(impGroups).to.deep.equal(groups);
-        expect(impEcPointFormats).to.deep.equal(ecPointFormats);
+        expect(impersonatedHello.ciphers).to.deep.equal(defaultHello.ciphers);
+        expect(impersonatedHello.signatureAlgorithms).to.deep.equal(defaultHello.signatureAlgorithms);
+        expect(impersonatedHello.groups).to.deep.equal(defaultHello.groups);
+        expect(impersonatedHello.ecPointFormats).to.deep.equal(defaultHello.ecPointFormats);
 
         // Extension set should match (order may differ due to OpenSSL internals)
-        expect(new Set(impExtensions)).to.deep.equal(new Set(extensions));
-        expect(impExtensions).to.have.length(extensions.length);
+        expect(new Set(impersonatedHello.extensions)).to.deep.equal(new Set(defaultHello.extensions));
+        expect(impersonatedHello.extensions).to.have.length(defaultHello.extensions.length);
 
         // JA3 and JA4 should both match
         expect(impersonatedHello.ja3).to.equal(defaultHello.ja3);
@@ -75,11 +70,9 @@ describe('Baseline impersonation', () => {
             ...connectOptions,
         });
 
-        const [, , , , , sigAlgorithms] = hello.fingerprintData;
-
         // SHA-1 sigalgs should be present
-        expect(sigAlgorithms).to.include(0x0203, 'ecdsa_sha1');
-        expect(sigAlgorithms).to.include(0x0201, 'rsa_pkcs1_sha1');
+        expect(hello.signatureAlgorithms).to.include(0x0203, 'ecdsa_sha1');
+        expect(hello.signatureAlgorithms).to.include(0x0201, 'rsa_pkcs1_sha1');
     });
 
     it('custom (non-predefined) extensions appear in ClientHello', async () => {
@@ -104,8 +97,7 @@ describe('Baseline impersonation', () => {
             ...connectOptions,
         });
 
-        const [, , extensions] = hello.fingerprintData;
-        const extSet = new Set(extensions);
+        const extSet = new Set(hello.extensions);
 
         expect(extSet.has(28), 'record_size_limit (28)').to.be.true;
         expect(extSet.has(34), 'delegated_credentials (34)').to.be.true;
@@ -136,13 +128,12 @@ describe('Baseline impersonation', () => {
         });
 
         // SCSV should appear in the captured cipher list
-        const [, ciphers] = hello.fingerprintData;
-        expect(ciphers).to.include(0x00ff, 'SCSV should be in ClientHello ciphers');
+        expect(hello.ciphers).to.include(0x00ff, 'SCSV should be in ClientHello ciphers');
 
         // The non-SCSV ciphers should all be present too
         const expectedCiphers = [0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f, 0x009c, 0x002f];
         for (const c of expectedCiphers) {
-            expect(ciphers).to.include(c, `cipher 0x${c.toString(16)} should be present`);
+            expect(hello.ciphers).to.include(c, `cipher 0x${c.toString(16)} should be present`);
         }
     });
 
@@ -166,23 +157,13 @@ describe('Baseline impersonation', () => {
             ...connectOptions,
         });
 
-        const [, , extensions] = hello.fingerprintData;
+        // The raw extension list includes the GREASE extensions we asked for...
+        const rawExtensionIds = hello.raw.extensions.map(e => e.id);
+        expect(rawExtensionIds).to.include(0x2a2a);
+        expect(rawExtensionIds).to.include(0x4a4a);
 
-        // fingerprintData strips GREASE, but we can check that the extension
-        // count is higher than a spec without GREASE extensions
-        const specWithoutGrease: ClientHelloSpec = {
-            ...spec,
-            extensions: spec.extensions.filter(e => (e.type & 0x0f0f) !== 0x0a0a),
-        };
-
-        const { secureContext: ctx2, connectOptions: opts2 } = impersonate(specWithoutGrease);
-        const hello2 = await captureClientHello({
-            secureContext: ctx2,
-            ...opts2,
-        });
-
-        // The non-GREASE extension set should be the same
-        const [, , extensions2] = hello2.fingerprintData;
-        expect(new Set(extensions)).to.deep.equal(new Set(extensions2));
+        // ...while the GREASE-filtered fingerprint view excludes them.
+        expect(hello.extensions).to.not.include(0x2a2a);
+        expect(hello.extensions).to.not.include(0x4a4a);
     });
 });

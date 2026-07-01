@@ -52,9 +52,8 @@ describe('Curl TLS fingerprint impersonation', () => {
     it('should match curl cipher suites exactly', async () => {
         const { secureContext, connectOptions } = impersonate(curlSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, ciphers] = hello.fingerprintData;
 
-        expect(ciphers).to.deep.equal([
+        expect(hello.ciphers).to.deep.equal([
             0x1302, 0x1303, 0x1301,
             0xc02c, 0xc030, 0x009f, 0xcca9, 0xcca8, 0xccaa,
             0xc02b, 0xc02f, 0x009e,
@@ -68,9 +67,8 @@ describe('Curl TLS fingerprint impersonation', () => {
     it('should match curl signature algorithms exactly', async () => {
         const { secureContext, connectOptions } = impersonate(curlSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , , , , sigAlgorithms] = hello.fingerprintData;
 
-        expect(sigAlgorithms).to.deep.equal([
+        expect(hello.signatureAlgorithms).to.deep.equal([
             0x0403, 0x0503, 0x0603, 0x0807, 0x0808,
             0x0809, 0x080a, 0x080b,
             0x0804, 0x0805, 0x0806,
@@ -83,9 +81,8 @@ describe('Curl TLS fingerprint impersonation', () => {
     it('should match curl supported groups exactly', async () => {
         const { secureContext, connectOptions } = impersonate(curlSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , , groups] = hello.fingerprintData;
 
-        expect(groups).to.deep.equal([
+        expect(hello.groups).to.deep.equal([
             0x001d, 0x0017, 0x001e, 0x0019, 0x0018,
             0x0100, 0x0101, 0x0102, 0x0103, 0x0104,
         ]);
@@ -94,12 +91,11 @@ describe('Curl TLS fingerprint impersonation', () => {
     it('should match curl extensions exactly', async () => {
         const { secureContext, connectOptions } = impersonate(curlSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
-        const [, , extensions] = hello.fingerprintData;
 
-        expect(new Set(extensions)).to.deep.equal(new Set(
+        expect(new Set(hello.extensions)).to.deep.equal(new Set(
             [0, 11, 10, 16, 22, 23, 49, 13, 43, 45, 51, 21]
         ));
-        expect(extensions).to.have.length(12);
+        expect(hello.extensions).to.have.length(12);
     });
 
     it('should match curl JA4 fingerprint', async () => {
