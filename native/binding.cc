@@ -70,9 +70,8 @@ struct ExtensionData {
   napi_env env;
   bool is_static;
   std::vector<unsigned char> static_data;
-  napi_ref add_cb;             // nullptr unless dynamic
-  napi_ref parse_cb;           // nullptr unless a parse callback was given
-  napi_ref secure_context_ref; // keeps the SecureContext alive
+  napi_ref add_cb;   // nullptr unless dynamic
+  napi_ref parse_cb; // nullptr unless a parse callback was given
 };
 
 // ─── OpenSSL custom extension callbacks ──────────────────────────────────────
@@ -256,6 +255,51 @@ static bool GetUint32Arg(napi_env env, napi_value value, uint32_t* out,
   return true;
 }
 
+// ─── Per-SSL_CTX ownership of ExtensionData ──────────────────────────────────
+//
+// SSL_CTX_add_custom_ext keeps a pointer to each ExtensionData for the lifetime
+// of the SSL_CTX but provides no hook to free it. We register an SSL_CTX ex_data
+// slot whose free callback fires when the SSL_CTX is destroyed - i.e. once the
+// SecureContext and every connection still using it are gone - and free all the
+// ExtensionData attached to that context there. This ties their lifetime to the
+// SSL_CTX with no strong reference back to the SecureContext, so the context is
+// no longer rooted and can be collected normally.
+
+static void FreeCtxExtensions(void* parent, void* ptr, CRYPTO_EX_DATA* ad,
+                              int idx, long argl, void* argp) {
+  if (ptr == nullptr) return;
+  auto* list = static_cast<std::vector<ExtensionData*>*>(ptr);
+  for (ExtensionData* data : *list) {
+    if (data->add_cb) napi_delete_reference(data->env, data->add_cb);
+    if (data->parse_cb) napi_delete_reference(data->env, data->parse_cb);
+    delete data;
+  }
+  delete list;
+}
+
+static int CtxExtensionsIndex() {
+  static int index = SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr,
+                                              FreeCtxExtensions);
+  return index;
+}
+
+// Hand ownership of an ExtensionData to the SSL_CTX so it is freed with it.
+static bool RegisterCtxExtension(SSL_CTX* ctx, ExtensionData* data) {
+  int index = CtxExtensionsIndex();
+  if (index < 0) return false;
+  auto* list = static_cast<std::vector<ExtensionData*>*>(
+      SSL_CTX_get_ex_data(ctx, index));
+  if (list == nullptr) {
+    list = new std::vector<ExtensionData*>();
+    if (SSL_CTX_set_ex_data(ctx, index, list) != 1) {
+      delete list;
+      return false;
+    }
+  }
+  list->push_back(data);
+  return true;
+}
+
 // ─── Exported functions ──────────────────────────────────────────────────────
 
 // addCustomExtension(nativeCtx, extType, flags, data|null, add|null, parse|null)
@@ -292,7 +336,6 @@ napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
   ext_data->env = env;
   ext_data->add_cb = nullptr;
   ext_data->parse_cb = nullptr;
-  ext_data->secure_context_ref = nullptr;
 
   bool is_buffer = false;
   napi_is_buffer(env, argv[3], &is_buffer);
@@ -324,8 +367,6 @@ napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
     napi_create_reference(env, argv[5], 1, &ext_data->parse_cb);
   }
 
-  napi_create_reference(env, argv[0], 1, &ext_data->secure_context_ref);
-
   int rc = SSL_CTX_add_custom_ext(
       ssl_ctx, ext_type, ctx_flags,
       CustomExtAddCallback, CustomExtFreeCallback, ext_data,
@@ -334,9 +375,6 @@ napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
   if (rc != 1) {
     if (ext_data->add_cb) napi_delete_reference(env, ext_data->add_cb);
     if (ext_data->parse_cb) napi_delete_reference(env, ext_data->parse_cb);
-    if (ext_data->secure_context_ref) {
-      napi_delete_reference(env, ext_data->secure_context_ref);
-    }
     delete ext_data;
     napi_throw_error(env, nullptr,
         "SSL_CTX_add_custom_ext failed (duplicate or internally-handled "
@@ -344,6 +382,9 @@ napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
     return nullptr;
   }
 
+  // The SSL_CTX now references ext_data via the callbacks above; hand it
+  // ownership so ext_data is freed when the context is destroyed.
+  RegisterCtxExtension(ssl_ctx, ext_data);
   return nullptr;
 }
 
