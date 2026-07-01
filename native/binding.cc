@@ -1,39 +1,78 @@
-#include <node.h>
-#include <node_buffer.h>
+// Node-API (NAPI) addon exposing the OpenSSL SSL_CTX knobs that Node's public
+// TLS API does not, so a ClientHello fingerprint can be reproduced.
+//
+// Registered as a NAPI module, so a single prebuilt binary loads across all
+// Node ABIs (no NODE_MODULE_VERSION gate). The one Node-internal dependency,
+// node::crypto::GetSSLCtx, is resolved with dlsym and passed V8 handles bridged
+// from napi_value; both the bridge and that symbol are ABI-stable, so the same
+// binary works on any Node >= 24.15.0 that exports GetSSLCtx.
+
+#include <node_api.h>
+#include <v8.h>
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
+#include <dlfcn.h>
+#include <cmath>
 #include <cstring>
 #include <vector>
-#include <dlfcn.h>
 
 namespace {
 
-using v8::Boolean;
-using v8::Context;
-using v8::Exception;
-using v8::FunctionCallbackInfo;
-using v8::Global;
-using v8::HandleScope;
-using v8::Isolate;
-using v8::Local;
-using v8::MaybeLocal;
-using v8::Null;
-using v8::Number;
-using v8::Object;
-using v8::String;
-using v8::Function;
-using v8::Value;
+// ─── napi_value <-> v8::Local bridge ─────────────────────────────────────────
+//
+// In Node's V8-based NAPI implementation a napi_value and a v8::Local<v8::Value>
+// share representation (a single tagged pointer). Copying the bits across is
+// ABI-stable: changing it would break every NAPI addon.
+static v8::Local<v8::Value> V8LocalFromNapi(napi_value v) {
+  v8::Local<v8::Value> local;
+  static_assert(sizeof(local) == sizeof(v),
+                "v8::Local and napi_value must share representation");
+  memcpy(static_cast<void*>(&local), &v, sizeof(v));
+  return local;
+}
+
+// ─── SSL_CTX resolution ──────────────────────────────────────────────────────
+
+using GetSSLCtxFunc = SSL_CTX* (*)(v8::Local<v8::Context>, v8::Local<v8::Value>);
+
+static GetSSLCtxFunc ResolveGetSSLCtx() {
+  // Mangled: node::crypto::GetSSLCtx(v8::Local<v8::Context>, v8::Local<v8::Value>)
+  return reinterpret_cast<GetSSLCtxFunc>(
+      dlsym(RTLD_DEFAULT,
+          "_ZN4node6crypto9GetSSLCtxEN2v85LocalINS1_7ContextEEENS2_INS1_5ValueEEE"));
+}
+
+// Resolve the SSL_CTX* behind a SecureContext value, throwing a JS exception
+// (and returning nullptr) if the runtime is unsupported or the value is invalid.
+// GetSSLCtx unwraps the outer tls.createSecureContext() wrapper itself.
+static SSL_CTX* GetSSLCtx(napi_env env, napi_value secure_context) {
+  static GetSSLCtxFunc fn = ResolveGetSSLCtx();
+  if (fn == nullptr) {
+    napi_throw_error(env, nullptr,
+        "tls-impersonate requires Node.js >= 24.15.0 "
+        "(node::crypto::GetSSLCtx is unavailable in this runtime)");
+    return nullptr;
+  }
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  SSL_CTX* ssl_ctx = fn(context, V8LocalFromNapi(secure_context));
+  if (ssl_ctx == nullptr) {
+    napi_throw_type_error(env, nullptr,
+        "Argument must be a TLS SecureContext");
+    return nullptr;
+  }
+  return ssl_ctx;
+}
 
 // ─── ExtensionData: per-registration callback state ──────────────────────────
 
 struct ExtensionData {
-  Isolate* isolate;
-  Global<Context> v8_context;
+  napi_env env;
   bool is_static;
   std::vector<unsigned char> static_data;
-  Global<Function> add_cb;
-  Global<Function> parse_cb;
-  Global<Value> secure_context_ref;  // prevent GC of the SecureContext
+  napi_ref add_cb;             // nullptr unless dynamic
+  napi_ref parse_cb;           // nullptr unless a parse callback was given
+  napi_ref secure_context_ref; // keeps the SecureContext alive
 };
 
 // ─── OpenSSL custom extension callbacks ──────────────────────────────────────
@@ -60,53 +99,66 @@ static int CustomExtAddCallback(SSL* s,
     return 1;
   }
 
-  // Dynamic mode: call JS add callback
-  Isolate* isolate = data->isolate;
-  HandleScope handle_scope(isolate);
-  Local<Context> ctx = data->v8_context.Get(isolate);
-  Context::Scope context_scope(ctx);
-
-  Local<Value> argv[2] = {
-    Number::New(isolate, static_cast<double>(ext_type)),
-    Number::New(isolate, static_cast<double>(context)),
-  };
-
-  v8::TryCatch try_catch(isolate);
-  Local<Function> cb = data->add_cb.Get(isolate);
-  MaybeLocal<Value> maybe_result = cb->Call(ctx, Null(isolate), 2, argv);
-
-  if (try_catch.HasCaught()) {
+  // Dynamic mode: call the JS add callback. Fires synchronously on the JS
+  // thread during the handshake, so the stored napi_env is valid here.
+  napi_env env = data->env;
+  napi_handle_scope scope;
+  if (napi_open_handle_scope(env, &scope) != napi_ok) {
     *al = SSL_AD_INTERNAL_ERROR;
     return -1;
   }
 
-  Local<Value> result;
-  if (!maybe_result.ToLocal(&result) || result->IsNull() ||
-      result->IsUndefined()) {
+  napi_value cb, recv, argv[2], result;
+  napi_get_reference_value(env, data->add_cb, &cb);
+  napi_get_undefined(env, &recv);
+  napi_create_double(env, ext_type, &argv[0]);
+  napi_create_double(env, context, &argv[1]);
+
+  // Treat any non-ok status as failure so `result` is never read uninitialized.
+  napi_status status = napi_call_function(env, recv, cb, 2, argv, &result);
+  if (status != napi_ok) {
+    napi_value exc;
+    napi_get_and_clear_last_exception(env, &exc);
+    napi_close_handle_scope(env, scope);
+    *al = SSL_AD_INTERNAL_ERROR;
+    return -1;
+  }
+
+  napi_valuetype type;
+  napi_typeof(env, result, &type);
+  if (type == napi_null || type == napi_undefined) {
+    napi_close_handle_scope(env, scope);
     return 0;  // skip this extension
   }
 
-  if (!node::Buffer::HasInstance(result)) {
+  bool is_buffer = false;
+  napi_is_buffer(env, result, &is_buffer);
+  if (!is_buffer) {
+    napi_close_handle_scope(env, scope);
     *al = SSL_AD_INTERNAL_ERROR;
     return -1;
   }
 
-  size_t len = node::Buffer::Length(result);
+  void* buf_data;
+  size_t len;
+  napi_get_buffer_info(env, result, &buf_data, &len);
   if (len == 0) {
     *out = nullptr;
     *outlen = 0;
+    napi_close_handle_scope(env, scope);
     return 1;
   }
 
-  unsigned char* buf =
-      static_cast<unsigned char*>(OPENSSL_malloc(len));
+  unsigned char* buf = static_cast<unsigned char*>(OPENSSL_malloc(len));
   if (buf == nullptr) {
+    napi_close_handle_scope(env, scope);
     *al = SSL_AD_INTERNAL_ERROR;
     return -1;
   }
-  memcpy(buf, node::Buffer::Data(result), len);
+  memcpy(buf, buf_data, len);
   *out = buf;
   *outlen = len;
+  napi_close_handle_scope(env, scope);
   return 1;
 }
 
@@ -132,147 +184,147 @@ static int CustomExtParseCallback(SSL* s,
                                   int* al,
                                   void* parse_arg) {
   ExtensionData* data = static_cast<ExtensionData*>(parse_arg);
-
-  if (data->parse_cb.IsEmpty()) {
+  if (data->parse_cb == nullptr) {
     return 1;  // accept any data
   }
 
-  Isolate* isolate = data->isolate;
-  HandleScope handle_scope(isolate);
-  Local<Context> ctx = data->v8_context.Get(isolate);
-  Context::Scope context_scope(ctx);
-
-  MaybeLocal<Object> maybe_buf = node::Buffer::Copy(isolate,
-      reinterpret_cast<const char*>(in), inlen);
-  Local<Object> buf;
-  if (!maybe_buf.ToLocal(&buf)) {
+  napi_env env = data->env;
+  napi_handle_scope scope;
+  if (napi_open_handle_scope(env, &scope) != napi_ok) {
     *al = SSL_AD_INTERNAL_ERROR;
     return 0;
   }
 
-  Local<Value> argv[3] = {
-    Number::New(isolate, static_cast<double>(ext_type)),
-    Number::New(isolate, static_cast<double>(context)),
-    buf,
-  };
-
-  v8::TryCatch try_catch(isolate);
-  Local<Function> cb = data->parse_cb.Get(isolate);
-  MaybeLocal<Value> maybe_result = cb->Call(ctx, Null(isolate), 3, argv);
-
-  if (try_catch.HasCaught()) {
+  void* copy_data;
+  napi_value buf;
+  if (napi_create_buffer_copy(env, inlen, in, &copy_data, &buf) != napi_ok) {
+    napi_close_handle_scope(env, scope);
     *al = SSL_AD_INTERNAL_ERROR;
     return 0;
   }
 
-  Local<Value> result;
-  if (!maybe_result.ToLocal(&result)) {
+  napi_value cb, recv, argv[3], result;
+  napi_get_reference_value(env, data->parse_cb, &cb);
+  napi_get_undefined(env, &recv);
+  napi_create_double(env, ext_type, &argv[0]);
+  napi_create_double(env, context, &argv[1]);
+  argv[2] = buf;
+
+  // Treat any non-ok status as failure so `result` is never read uninitialized.
+  napi_status status = napi_call_function(env, recv, cb, 3, argv, &result);
+  if (status != napi_ok) {
+    napi_value exc;
+    napi_get_and_clear_last_exception(env, &exc);
+    napi_close_handle_scope(env, scope);
     *al = SSL_AD_INTERNAL_ERROR;
     return 0;
   }
 
-  if (result->IsFalse()) {
-    *al = SSL_AD_DECODE_ERROR;
-    return 0;
+  napi_valuetype type;
+  napi_typeof(env, result, &type);
+  if (type == napi_boolean) {
+    bool value = true;
+    napi_get_value_bool(env, result, &value);
+    if (!value) {
+      napi_close_handle_scope(env, scope);
+      *al = SSL_AD_DECODE_ERROR;
+      return 0;
+    }
   }
 
+  napi_close_handle_scope(env, scope);
   return 1;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Argument helpers ────────────────────────────────────────────────────────
 
-// Resolve SSL_CTX* from a SecureContext via node::crypto::GetSSLCtx, a public
-// API exported since Node 24.15.0. Resolved with dlsym so that unsupported
-// runtimes throw a clean JS exception rather than failing to load the addon.
-// GetSSLCtx unwraps the outer tls.createSecureContext() wrapper itself and
-// returns nullptr for values that are not a SecureContext.
-using GetSSLCtxFunc = SSL_CTX* (*)(v8::Local<v8::Context>, v8::Local<v8::Value>);
-
-static GetSSLCtxFunc ResolveGetSSLCtx() {
-  // Mangled: node::crypto::GetSSLCtx(v8::Local<v8::Context>, v8::Local<v8::Value>)
-  return reinterpret_cast<GetSSLCtxFunc>(
-      dlsym(RTLD_DEFAULT,
-          "_ZN4node6crypto9GetSSLCtxEN2v85LocalINS1_7ContextEEENS2_INS1_5ValueEEE"));
-}
-
-static SSL_CTX* GetSSLCtx(Local<Context> context, Local<Value> value) {
-  static GetSSLCtxFunc fn = ResolveGetSSLCtx();
-  if (fn == nullptr) {
-    Isolate* isolate = Isolate::GetCurrent();
-    isolate->ThrowException(Exception::Error(
-        String::NewFromUtf8Literal(isolate,
-            "tls-impersonate requires Node.js >= 24.15.0 "
-            "(node::crypto::GetSSLCtx is unavailable in this runtime)")));
-    return nullptr;
+// Strictly validate a non-negative 32-bit integer, matching the old
+// v8::Value::IsUint32() check. napi_get_value_uint32 would instead coerce
+// (truncating fractionals, wrapping negatives/large values modulo 2^32), which
+// could silently register the wrong extension type or context flags.
+static bool GetUint32Arg(napi_env env, napi_value value, uint32_t* out,
+                         const char* message) {
+  napi_valuetype type;
+  double number;
+  if (napi_typeof(env, value, &type) != napi_ok || type != napi_number ||
+      napi_get_value_double(env, value, &number) != napi_ok ||
+      number < 0 || number > 0xFFFFFFFF || number != std::floor(number)) {
+    napi_throw_type_error(env, nullptr, message);
+    return false;
   }
-  return fn(context, value);
+  *out = static_cast<uint32_t>(number);
+  return true;
 }
 
 // ─── Exported functions ──────────────────────────────────────────────────────
 
 // addCustomExtension(nativeCtx, extType, flags, data|null, add|null, parse|null)
-void AddCustomExtension(const FunctionCallbackInfo<Value>& args) {
-  Isolate* isolate = args.GetIsolate();
-  Local<Context> context = isolate->GetCurrentContext();
-
-  if (args.Length() < 6) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate, "Expected 6 arguments")));
-    return;
+napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
+  size_t argc = 6;
+  napi_value argv[6];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc < 6) {
+    napi_throw_type_error(env, nullptr, "Expected 6 arguments");
+    return nullptr;
   }
 
-  SSL_CTX* ssl_ctx = GetSSLCtx(context, args[0]);
-  if (ssl_ctx == nullptr) return;
+  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
+  if (ssl_ctx == nullptr) return nullptr;
 
-  if (!args[1]->IsUint32()) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "extensionType must be a non-negative integer")));
-    return;
+  uint32_t ext_type;
+  if (!GetUint32Arg(env, argv[1], &ext_type,
+                    "extensionType must be a non-negative integer")) {
+    return nullptr;
   }
-  unsigned int ext_type = args[1].As<v8::Uint32>()->Value();
   if (ext_type > 0xFFFF) {
-    isolate->ThrowException(Exception::RangeError(
-        String::NewFromUtf8Literal(isolate,
-            "extensionType must be in range 0-65535")));
-    return;
+    napi_throw_range_error(env, nullptr,
+        "extensionType must be in range 0-65535");
+    return nullptr;
   }
 
-  if (!args[2]->IsUint32()) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "context flags must be a non-negative integer")));
-    return;
+  uint32_t ctx_flags;
+  if (!GetUint32Arg(env, argv[2], &ctx_flags,
+                    "context flags must be a non-negative integer")) {
+    return nullptr;
   }
-  unsigned int ctx_flags = args[2].As<v8::Uint32>()->Value();
 
   ExtensionData* ext_data = new ExtensionData();
-  ext_data->isolate = isolate;
-  ext_data->v8_context.Reset(isolate, context);
+  ext_data->env = env;
+  ext_data->add_cb = nullptr;
+  ext_data->parse_cb = nullptr;
+  ext_data->secure_context_ref = nullptr;
 
-  if (node::Buffer::HasInstance(args[3])) {
+  bool is_buffer = false;
+  napi_is_buffer(env, argv[3], &is_buffer);
+  napi_valuetype add_type;
+  napi_typeof(env, argv[4], &add_type);
+
+  if (is_buffer) {
     ext_data->is_static = true;
-    size_t len = node::Buffer::Length(args[3]);
+    void* data;
+    size_t len;
+    napi_get_buffer_info(env, argv[3], &data, &len);
     if (len > 0) {
       ext_data->static_data.resize(len);
-      memcpy(ext_data->static_data.data(), node::Buffer::Data(args[3]), len);
+      memcpy(ext_data->static_data.data(), data, len);
     }
-  } else if (args[4]->IsFunction()) {
+  } else if (add_type == napi_function) {
     ext_data->is_static = false;
-    ext_data->add_cb.Reset(isolate, args[4].As<Function>());
+    napi_create_reference(env, argv[4], 1, &ext_data->add_cb);
   } else {
     delete ext_data;
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "Either data (Buffer) or add (Function) must be provided")));
-    return;
+    napi_throw_type_error(env, nullptr,
+        "Either data (Buffer) or add (Function) must be provided");
+    return nullptr;
   }
 
-  if (args[5]->IsFunction()) {
-    ext_data->parse_cb.Reset(isolate, args[5].As<Function>());
+  napi_valuetype parse_type;
+  napi_typeof(env, argv[5], &parse_type);
+  if (parse_type == napi_function) {
+    napi_create_reference(env, argv[5], 1, &ext_data->parse_cb);
   }
 
-  ext_data->secure_context_ref.Reset(isolate, args[0]);
+  napi_create_reference(env, argv[0], 1, &ext_data->secure_context_ref);
 
   int rc = SSL_CTX_add_custom_ext(
       ssl_ctx, ext_type, ctx_flags,
@@ -280,203 +332,207 @@ void AddCustomExtension(const FunctionCallbackInfo<Value>& args) {
       CustomExtParseCallback, ext_data);
 
   if (rc != 1) {
+    if (ext_data->add_cb) napi_delete_reference(env, ext_data->add_cb);
+    if (ext_data->parse_cb) napi_delete_reference(env, ext_data->parse_cb);
+    if (ext_data->secure_context_ref) {
+      napi_delete_reference(env, ext_data->secure_context_ref);
+    }
     delete ext_data;
-    isolate->ThrowException(Exception::Error(
-        String::NewFromUtf8Literal(isolate,
-            "SSL_CTX_add_custom_ext failed (duplicate or internally-handled "
-            "extension type?)")));
-    return;
+    napi_throw_error(env, nullptr,
+        "SSL_CTX_add_custom_ext failed (duplicate or internally-handled "
+        "extension type?)");
+    return nullptr;
   }
+
+  return nullptr;
 }
 
 // isPredefinedExtension(extType) -> bool
-void IsPredefinedExtension(const FunctionCallbackInfo<Value>& args) {
-  Isolate* isolate = args.GetIsolate();
+napi_value IsPredefinedExtension(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
 
-  if (args.Length() < 1 || !args[0]->IsUint32()) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "extensionType must be a non-negative integer")));
-    return;
+  uint32_t ext_type;
+  if (argc < 1 ||
+      !GetUint32Arg(env, argv[0], &ext_type,
+                    "extensionType must be a non-negative integer")) {
+    return nullptr;
   }
 
-  unsigned int ext_type = args[0].As<v8::Uint32>()->Value();
   int supported = SSL_extension_supported(ext_type);
-  args.GetReturnValue().Set(Boolean::New(isolate, supported == 1));
+  napi_value result;
+  napi_get_boolean(env, supported == 1, &result);
+  return result;
 }
 
-// enableCompressCertificate(nativeCtx, algs)
-// algs is an array of algorithm IDs: 1=zlib, 2=brotli, 3=zstd
-void EnableCompressCertificate(const FunctionCallbackInfo<Value>& args) {
-  Isolate* isolate = args.GetIsolate();
-  Local<Context> context = isolate->GetCurrentContext();
-
-  if (args.Length() < 2) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "Expected 2 arguments: nativeCtx, algorithms")));
-    return;
+// enableCompressCertificate(nativeCtx, algs) - algs: 1=zlib, 2=brotli, 3=zstd
+napi_value EnableCompressCertificate(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc < 2) {
+    napi_throw_type_error(env, nullptr,
+        "Expected 2 arguments: nativeCtx, algorithms");
+    return nullptr;
   }
 
-  SSL_CTX* ssl_ctx = GetSSLCtx(context, args[0]);
-  if (ssl_ctx == nullptr) return;
+  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
+  if (ssl_ctx == nullptr) return nullptr;
 
-  if (!args[1]->IsArray()) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "algorithms must be an array of integers")));
-    return;
+  bool is_array = false;
+  napi_is_array(env, argv[1], &is_array);
+  if (!is_array) {
+    napi_throw_type_error(env, nullptr,
+        "algorithms must be an array of integers");
+    return nullptr;
   }
 
-  Local<v8::Array> algs_arr = args[1].As<v8::Array>();
-  uint32_t len = algs_arr->Length();
-
-  // Build C array of algorithm IDs
+  uint32_t len;
+  napi_get_array_length(env, argv[1], &len);
   std::vector<int> alg_ids(len);
   for (uint32_t i = 0; i < len; i++) {
-    Local<Value> val;
-    if (!algs_arr->Get(context, i).ToLocal(&val) || !val->IsUint32()) {
-      isolate->ThrowException(Exception::TypeError(
-          String::NewFromUtf8Literal(isolate,
-              "Each algorithm must be a non-negative integer")));
-      return;
+    napi_value element;
+    napi_get_element(env, argv[1], i, &element);
+    uint32_t value;
+    if (!GetUint32Arg(env, element, &value,
+                      "Each algorithm must be a non-negative integer")) {
+      return nullptr;
     }
-    alg_ids[i] = static_cast<int>(val.As<v8::Uint32>()->Value());
+    alg_ids[i] = static_cast<int>(value);
   }
 
   int rc = SSL_CTX_set1_cert_comp_preference(ssl_ctx, alg_ids.data(),
-                                              static_cast<size_t>(len));
+                                             static_cast<size_t>(len));
   if (rc != 1) {
-    isolate->ThrowException(Exception::Error(
-        String::NewFromUtf8Literal(isolate,
-            "SSL_CTX_set1_cert_comp_preference failed "
-            "(unsupported compression algorithm?)")));
-    return;
+    napi_throw_error(env, nullptr,
+        "SSL_CTX_set1_cert_comp_preference failed "
+        "(unsupported compression algorithm?)");
+    return nullptr;
   }
+
+  return nullptr;
 }
 
 // enablePostHandshakeAuth(nativeCtx)
-void EnablePostHandshakeAuth(const FunctionCallbackInfo<Value>& args) {
-  Isolate* isolate = args.GetIsolate();
-  Local<Context> context = isolate->GetCurrentContext();
-
-  if (args.Length() < 1) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "Expected 1 argument: nativeCtx")));
-    return;
+napi_value EnablePostHandshakeAuth(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc < 1) {
+    napi_throw_type_error(env, nullptr, "Expected 1 argument: nativeCtx");
+    return nullptr;
   }
 
-  SSL_CTX* ssl_ctx = GetSSLCtx(context, args[0]);
-  if (ssl_ctx == nullptr) return;
+  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
+  if (ssl_ctx == nullptr) return nullptr;
 
   SSL_CTX_set_post_handshake_auth(ssl_ctx, 1);
+  return nullptr;
 }
 
-// setOptions(nativeCtx, options) — set SSL_CTX options directly
-void SetOptions(const FunctionCallbackInfo<Value>& args) {
-  Isolate* isolate = args.GetIsolate();
-  Local<Context> context = isolate->GetCurrentContext();
-
-  if (args.Length() < 2) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "Expected 2 arguments: nativeCtx, options")));
-    return;
+// setOptions/clearOptions(nativeCtx, options)
+static napi_value ChangeOptions(napi_env env, napi_callback_info info,
+                                bool clear) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc < 2) {
+    napi_throw_type_error(env, nullptr,
+        "Expected 2 arguments: nativeCtx, options");
+    return nullptr;
   }
 
-  SSL_CTX* ssl_ctx = GetSSLCtx(context, args[0]);
-  if (ssl_ctx == nullptr) return;
+  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
+  if (ssl_ctx == nullptr) return nullptr;
 
-  if (!args[1]->IsNumber()) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "options must be a number")));
-    return;
+  int64_t options;
+  if (napi_get_value_int64(env, argv[1], &options) != napi_ok) {
+    napi_throw_type_error(env, nullptr, "options must be a number");
+    return nullptr;
   }
 
-  long opts = static_cast<long>(args[1]->IntegerValue(context).FromJust());
-  SSL_CTX_set_options(ssl_ctx, opts);
+  if (clear) {
+    SSL_CTX_clear_options(ssl_ctx, static_cast<uint64_t>(options));
+  } else {
+    SSL_CTX_set_options(ssl_ctx, static_cast<uint64_t>(options));
+  }
+  return nullptr;
 }
 
-// clearOptions(nativeCtx, options) — clear SSL_CTX options
-void ClearOptions(const FunctionCallbackInfo<Value>& args) {
-  Isolate* isolate = args.GetIsolate();
-  Local<Context> context = isolate->GetCurrentContext();
+napi_value SetOptions(napi_env env, napi_callback_info info) {
+  return ChangeOptions(env, info, false);
+}
 
-  if (args.Length() < 2) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "Expected 2 arguments: nativeCtx, options")));
-    return;
-  }
-
-  SSL_CTX* ssl_ctx = GetSSLCtx(context, args[0]);
-  if (ssl_ctx == nullptr) return;
-
-  if (!args[1]->IsNumber()) {
-    isolate->ThrowException(Exception::TypeError(
-        String::NewFromUtf8Literal(isolate,
-            "options must be a number")));
-    return;
-  }
-
-  long opts = static_cast<long>(args[1]->IntegerValue(context).FromJust());
-  SSL_CTX_clear_options(ssl_ctx, opts);
+napi_value ClearOptions(napi_env env, napi_callback_info info) {
+  return ChangeOptions(env, info, true);
 }
 
 // ─── Module initialization ───────────────────────────────────────────────────
 
-void Initialize(Local<Object> exports,
-                Local<Value> module,
-                Local<Context> context) {
-  Isolate* isolate = Isolate::GetCurrent();
-
-  NODE_SET_METHOD(exports, "addCustomExtension", AddCustomExtension);
-  NODE_SET_METHOD(exports, "isPredefinedExtension", IsPredefinedExtension);
-  NODE_SET_METHOD(exports, "enableCompressCertificate", EnableCompressCertificate);
-  NODE_SET_METHOD(exports, "enablePostHandshakeAuth", EnablePostHandshakeAuth);
-  NODE_SET_METHOD(exports, "setOptions", SetOptions);
-  NODE_SET_METHOD(exports, "clearOptions", ClearOptions);
-
-  // SSL_EXT_* constants
-  Local<Object> constants = Object::New(isolate);
-  auto set_const = [&](const char* name, unsigned int value) {
-    constants->Set(context,
-        String::NewFromUtf8(isolate, name).ToLocalChecked(),
-        Number::New(isolate, static_cast<double>(value))).Check();
-  };
-
-  set_const("SSL_EXT_TLS_ONLY", SSL_EXT_TLS_ONLY);
-  set_const("SSL_EXT_DTLS_ONLY", SSL_EXT_DTLS_ONLY);
-  set_const("SSL_EXT_TLS_IMPLEMENTATION_ONLY", SSL_EXT_TLS_IMPLEMENTATION_ONLY);
-  set_const("SSL_EXT_SSL3_ALLOWED", SSL_EXT_SSL3_ALLOWED);
-  set_const("SSL_EXT_TLS1_2_AND_BELOW_ONLY", SSL_EXT_TLS1_2_AND_BELOW_ONLY);
-  set_const("SSL_EXT_TLS1_3_ONLY", SSL_EXT_TLS1_3_ONLY);
-  set_const("SSL_EXT_IGNORE_ON_RESUMPTION", SSL_EXT_IGNORE_ON_RESUMPTION);
-  set_const("SSL_EXT_CLIENT_HELLO", SSL_EXT_CLIENT_HELLO);
-  set_const("SSL_EXT_TLS1_2_SERVER_HELLO", SSL_EXT_TLS1_2_SERVER_HELLO);
-  set_const("SSL_EXT_TLS1_3_SERVER_HELLO", SSL_EXT_TLS1_3_SERVER_HELLO);
-  set_const("SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS",
-            SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS);
-  set_const("SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST",
-            SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST);
-  set_const("SSL_EXT_TLS1_3_CERTIFICATE", SSL_EXT_TLS1_3_CERTIFICATE);
-  set_const("SSL_EXT_TLS1_3_NEW_SESSION_TICKET",
-            SSL_EXT_TLS1_3_NEW_SESSION_TICKET);
-  set_const("SSL_EXT_TLS1_3_CERTIFICATE_REQUEST",
-            SSL_EXT_TLS1_3_CERTIFICATE_REQUEST);
-
-  // Certificate compression algorithm constants
-  set_const("TLSEXT_comp_cert_zlib", TLSEXT_comp_cert_zlib);
-  set_const("TLSEXT_comp_cert_brotli", TLSEXT_comp_cert_brotli);
-  set_const("TLSEXT_comp_cert_zstd", TLSEXT_comp_cert_zstd);
-
-  exports->Set(context,
-      String::NewFromUtf8Literal(isolate, "constants"),
-      constants).Check();
+static void SetConstant(napi_env env, napi_value obj, const char* name,
+                        uint32_t value) {
+  napi_value v;
+  napi_create_uint32(env, value, &v);
+  napi_set_named_property(env, obj, name, v);
 }
 
-}  // anonymous namespace
+napi_value Init(napi_env env, napi_value exports) {
+  napi_property_descriptor methods[] = {
+    {"addCustomExtension", nullptr, AddCustomExtension, nullptr, nullptr,
+     nullptr, napi_enumerable, nullptr},
+    {"isPredefinedExtension", nullptr, IsPredefinedExtension, nullptr, nullptr,
+     nullptr, napi_enumerable, nullptr},
+    {"enableCompressCertificate", nullptr, EnableCompressCertificate, nullptr,
+     nullptr, nullptr, napi_enumerable, nullptr},
+    {"enablePostHandshakeAuth", nullptr, EnablePostHandshakeAuth, nullptr,
+     nullptr, nullptr, napi_enumerable, nullptr},
+    {"setOptions", nullptr, SetOptions, nullptr, nullptr, nullptr,
+     napi_enumerable, nullptr},
+    {"clearOptions", nullptr, ClearOptions, nullptr, nullptr, nullptr,
+     napi_enumerable, nullptr},
+  };
+  napi_define_properties(env, exports,
+                         sizeof(methods) / sizeof(methods[0]), methods);
 
-NODE_MODULE_CONTEXT_AWARE(NODE_GYP_MODULE_NAME, Initialize)
+  napi_value constants;
+  napi_create_object(env, &constants);
+
+  SetConstant(env, constants, "SSL_EXT_TLS_ONLY", SSL_EXT_TLS_ONLY);
+  SetConstant(env, constants, "SSL_EXT_DTLS_ONLY", SSL_EXT_DTLS_ONLY);
+  SetConstant(env, constants, "SSL_EXT_TLS_IMPLEMENTATION_ONLY",
+              SSL_EXT_TLS_IMPLEMENTATION_ONLY);
+  SetConstant(env, constants, "SSL_EXT_SSL3_ALLOWED", SSL_EXT_SSL3_ALLOWED);
+  SetConstant(env, constants, "SSL_EXT_TLS1_2_AND_BELOW_ONLY",
+              SSL_EXT_TLS1_2_AND_BELOW_ONLY);
+  SetConstant(env, constants, "SSL_EXT_TLS1_3_ONLY", SSL_EXT_TLS1_3_ONLY);
+  SetConstant(env, constants, "SSL_EXT_IGNORE_ON_RESUMPTION",
+              SSL_EXT_IGNORE_ON_RESUMPTION);
+  SetConstant(env, constants, "SSL_EXT_CLIENT_HELLO", SSL_EXT_CLIENT_HELLO);
+  SetConstant(env, constants, "SSL_EXT_TLS1_2_SERVER_HELLO",
+              SSL_EXT_TLS1_2_SERVER_HELLO);
+  SetConstant(env, constants, "SSL_EXT_TLS1_3_SERVER_HELLO",
+              SSL_EXT_TLS1_3_SERVER_HELLO);
+  SetConstant(env, constants, "SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS",
+              SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS);
+  SetConstant(env, constants, "SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST",
+              SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST);
+  SetConstant(env, constants, "SSL_EXT_TLS1_3_CERTIFICATE",
+              SSL_EXT_TLS1_3_CERTIFICATE);
+  SetConstant(env, constants, "SSL_EXT_TLS1_3_NEW_SESSION_TICKET",
+              SSL_EXT_TLS1_3_NEW_SESSION_TICKET);
+  SetConstant(env, constants, "SSL_EXT_TLS1_3_CERTIFICATE_REQUEST",
+              SSL_EXT_TLS1_3_CERTIFICATE_REQUEST);
+
+  SetConstant(env, constants, "TLSEXT_comp_cert_zlib", TLSEXT_comp_cert_zlib);
+  SetConstant(env, constants, "TLSEXT_comp_cert_brotli",
+              TLSEXT_comp_cert_brotli);
+  SetConstant(env, constants, "TLSEXT_comp_cert_zstd", TLSEXT_comp_cert_zstd);
+
+  napi_set_named_property(env, exports, "constants", constants);
+  return exports;
+}
+
+}  // namespace
+
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
