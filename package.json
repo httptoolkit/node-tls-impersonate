@@ -33,10 +33,14 @@
   "engines": {
     "node": ">=24.15.0"
   },
+  "os": [
+    "linux"
+  ],
   "scripts": {
     "install": "node-gyp-build",
     "build": "node-gyp rebuild && tsc",
     "build:ts": "tsc",
+    "prepack": "test -n \"$KEEP_PREBUILDS\" || rm -rf prebuilds",
     "prepublishOnly": "tsc",
     "test": "TS_NODE_TRANSPILE_ONLY=true mocha"
   },
