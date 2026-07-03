@@ -18,6 +18,8 @@ interface NativeBinding {
 
     enableCompressCertificate(nativeCtx: object, algorithms: number[]): void;
     enablePostHandshakeAuth(nativeCtx: object): void;
+    setCiphersuites(nativeCtx: object, ciphersuites: string): void;
+    getCiphers(nativeCtx: object): number[];
     setOptions(nativeCtx: object, options: number): void;
     clearOptions(nativeCtx: object, options: number): void;
 
@@ -121,6 +123,24 @@ export function enableCompressCertificate(
  */
 export function enablePostHandshakeAuth(ctx: tls.SecureContext): void {
     binding.enablePostHandshakeAuth(ctx);
+}
+
+/**
+ * Set the TLS 1.3 ciphersuite list and order (SSL_CTX_set_ciphersuites).
+ * Node's `ciphers` option cannot control the TLS 1.3 order independently of
+ * the TLS 1.2 cipher list, so this is set directly on the SecureContext.
+ */
+export function setCiphersuites(ctx: tls.SecureContext, ciphersuites: string): void {
+    binding.setCiphersuites(ctx, ciphersuites);
+}
+
+/**
+ * Return the IANA cipher-suite ids actually configured on the context. Ciphers
+ * requested but not compiled into this OpenSSL build (e.g. 3DES) are silently
+ * dropped, so this reveals which requested ciphers survived.
+ */
+export function getCiphers(ctx: tls.SecureContext): number[] {
+    return binding.getCiphers(ctx);
 }
 
 /**

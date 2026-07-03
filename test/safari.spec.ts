@@ -65,6 +65,7 @@ const SAFARI_EXPECTED_JA3 = 'e6313618686ad203ec858e82dbbc1ae0';
 const SAFARI_EXPECTED_JA4 = 't13d2014h2_a09f3c656075_604f15001eed';
 
 describe('Safari TLS fingerprint impersonation', () => {
+    // OpenSSL 3.5+ no longer ships 3DES, so those ciphers are dropped and reported.
     it('should match Safari cipher suites exactly (including 3DES)', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
@@ -77,6 +78,11 @@ describe('Safari TLS fingerprint impersonation', () => {
             0x009d, 0x009c, 0x0035, 0x002f,
             0xc008, 0xc012, 0x000a,
         ]);
+    }, () => {
+        const { unsupported } = impersonate(safariSpec);
+        for (const id of [0xc008, 0xc012, 0x000a]) {
+            expect(unsupported.some(u => u.kind === 'cipherSuite' && u.id === id)).to.be.true;
+        }
     }));
 
     it('should match Safari signature algorithms exactly', async () => {
@@ -95,6 +101,9 @@ describe('Safari TLS fingerprint impersonation', () => {
         expect(hello.groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018, 0x0019]);
     });
 
+    // The extension-set mismatch is the padding extension (21): OpenSSL only pads
+    // a 256-511 byte hello, and Safari's post-quantum key share makes this one
+    // larger, so it isn't added. Padding is always reported as unsupported.
     it('should match Safari extensions exactly', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
@@ -103,6 +112,9 @@ describe('Safari TLS fingerprint impersonation', () => {
         expect(extSet).to.deep.equal(new Set(SAFARI_EXPECTED_EXTENSIONS));
         expect(hello.extensions).to.have.length(SAFARI_EXPECTED_EXTENSIONS.length);
         expect(extSet.has(35), 'session_ticket (35) should be absent').to.be.false;
+    }, () => {
+        const { unsupported } = impersonate(safariSpec);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 21)).to.be.true;
     }));
 
     it('should send only uncompressed EC point format', expectedFailure('*', async () => {
@@ -110,20 +122,34 @@ describe('Safari TLS fingerprint impersonation', () => {
         const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ecPointFormats).to.deep.equal([0]);
+    }, () => {
+        const { unsupported } = impersonate(safariSpec);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
     }));
 
+    // JA4 hashes the cipher list, so 3DES being dropped is the gap.
     it('should match Safari JA4 fingerprint', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja4).to.equal(SAFARI_EXPECTED_JA4);
+    }, () => {
+        const { unsupported } = impersonate(safariSpec);
+        expect(unsupported.some(u => u.kind === 'cipherSuite' && u.id === 0xc008)).to.be.true;
     }));
 
+    // JA3 hashes ciphers, extensions and EC point formats - so 3DES, padding and
+    // ec_point_formats all contribute; all three must be reported.
     it('should match Safari JA3 fingerprint', expectedFailure('*', async () => {
         const { secureContext, connectOptions } = impersonate(safariSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja3).to.equal(SAFARI_EXPECTED_JA3);
+    }, () => {
+        const { unsupported } = impersonate(safariSpec);
+        expect(unsupported.some(u => u.kind === 'cipherSuite' && u.id === 0xc008)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 21)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
     }));
 
     runRealWorldTests('Safari', safariSpec);

@@ -166,4 +166,33 @@ describe('Baseline impersonation', () => {
         expect(hello.extensions).to.not.include(0x2a2a);
         expect(hello.extensions).to.not.include(0x4a4a);
     });
+
+    it('degrades gracefully for unreproducible codepoints and reports them', async () => {
+        const spec: ClientHelloSpec = {
+            cipherSuites: [0x1301, 0xdead /* unknown */, 0xc02b],
+            extensions: [
+                { type: 0 }, { type: 10 }, { type: 11 }, { type: 13 },
+                { type: 43 }, { type: 51 },
+            ],
+            supportedGroups: [0x001d, 0xbeef /* unknown */],
+            signatureAlgorithms: [0x0403, 0x0555 /* unknown */],
+            alpnProtocols: ['h2', 'http/1.1'],
+        };
+
+        // Does not throw; reports each unreproducible codepoint.
+        const { secureContext, connectOptions, unsupported } = impersonate(spec);
+        expect(unsupported.find(u => u.id === 0xdead)).to.deep.equal(
+            { kind: 'cipherSuite', id: 0xdead, reason: 'not a known cipher suite' });
+        expect(unsupported.find(u => u.id === 0xbeef)).to.deep.equal(
+            { kind: 'supportedGroup', id: 0xbeef, reason: 'not a known supported group' });
+        expect(unsupported.find(u => u.id === 0x0555)).to.deep.equal(
+            { kind: 'signatureAlgorithm', id: 0x0555, reason: 'not a known signature algorithm' });
+
+        // Still produces the closest fingerprint: known codepoints emitted,
+        // unreproducible ones simply absent.
+        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        expect(hello.ciphers).to.include(0x1301).and.to.include(0xc02b);
+        expect(hello.ciphers).to.not.include(0xdead);
+        expect(hello.groups).to.include(0x001d).and.to.not.include(0xbeef);
+    });
 });

@@ -5,6 +5,8 @@ import {
     isPredefinedExtension,
     enableCompressCertificate,
     enablePostHandshakeAuth,
+    setCiphersuites,
+    getCiphers,
     setOptions,
     constants,
 } from './native.js';
@@ -173,12 +175,26 @@ export interface ClientHelloSpec {
     alpnProtocols?: string[];
 }
 
+/** A part of the requested ClientHello that could not be reproduced. The
+ *  closest achievable fingerprint is still produced; this just records the gap
+ *  so callers can log or monitor it. */
+export interface UnsupportedFeature {
+    kind: 'cipherSuite' | 'supportedGroup' | 'signatureAlgorithm' | 'extension';
+    /** The codepoint from the spec (cipher/group/sigalg id, or extension type). */
+    id: number;
+    reason: string;
+}
+
 export interface ImpersonateResult {
     secureContext: tls.SecureContext;
     connectOptions: {
         ALPNProtocols?: string[];
         requestOCSP?: boolean;
     };
+    /** Spec elements that could not be reproduced, empty when the fingerprint
+     *  was reproduced fully. impersonate() never throws for these - it produces
+     *  the closest fingerprint it can and records the gaps here. */
+    unsupported: UnsupportedFeature[];
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -289,6 +305,7 @@ function parseCertCompressionAlgorithms(data: Buffer): number[] {
 
 // Extension type constants for config-driven handling
 const EXT_STATUS_REQUEST = 5;
+const EXT_EC_POINT_FORMATS = 11;
 const EXT_PADDING = 21;
 const EXT_ENCRYPT_THEN_MAC = 22;
 const EXT_COMPRESS_CERTIFICATE = 27;
@@ -297,6 +314,18 @@ const EXT_POST_HANDSHAKE_AUTH = 49;
 
 // Not exposed in Node's crypto.constants
 const SSL_OP_TLSEXT_PADDING = 1 << 4;
+
+/** The ec_point_formats OpenSSL advertises, which it does not let us configure.
+ *  OpenSSL < 3.6 sends uncompressed + both compressed [0,1,2]; 3.6+ defaults to
+ *  uncompressed only [0]. Detected by version until Node ships an API (or 3.6+)
+ *  that lets us set it directly. */
+function opensslEcPointFormats(): number[] {
+    const match = /^(\d+)\.(\d+)/.exec(process.versions.openssl ?? '');
+    const major = match ? Number(match[1]) : 0;
+    const minor = match ? Number(match[2]) : 0;
+    const atLeast36 = major > 3 || (major === 3 && minor >= 6);
+    return atLeast36 ? [0] : [0, 1, 2];
+}
 
 // ─── Main Function ───────────────────────────────────────────────────────────
 
@@ -310,8 +339,10 @@ export function impersonate(
     spec: ClientHelloSpec,
     options?: tls.SecureContextOptions
 ): ImpersonateResult {
+    const unsupported: UnsupportedFeature[] = [];
     const tls13Ciphers: string[] = [];
     const tls12Ciphers: string[] = [];
+    const requestedCipherIds: number[] = [];
     let wantScsv = false;
     let hasLegacyCipher = false;
     for (const id of spec.cipherSuites) {
@@ -324,10 +355,11 @@ export function impersonate(
         }
         const name = CIPHER_NAMES[id];
         if (!name) {
-            console.warn(`tls-impersonate: unknown cipher suite 0x${id.toString(16).padStart(4, '0')}, skipping`);
+            unsupported.push({ kind: 'cipherSuite', id, reason: 'not a known cipher suite' });
             continue;
         }
         if (LEGACY_CIPHER_IDS.has(id)) hasLegacyCipher = true;
+        requestedCipherIds.push(id);
         if (id >= 0x1300 && id <= 0x13ff) {
             tls13Ciphers.push(name);
         } else {
@@ -340,7 +372,7 @@ export function impersonate(
         if (isGreaseValue(id)) continue;
         const name = GROUP_NAMES[id];
         if (!name) {
-            console.warn(`tls-impersonate: unknown supported group 0x${id.toString(16).padStart(4, '0')}, skipping`);
+            unsupported.push({ kind: 'supportedGroup', id, reason: 'not a known supported group' });
             continue;
         }
         groups.push(name);
@@ -349,9 +381,10 @@ export function impersonate(
     const sigalgs: string[] = [];
     let hasSha1 = false;
     for (const id of spec.signatureAlgorithms) {
+        if (isGreaseValue(id)) continue;
         const name = SIGALG_NAMES[id];
         if (!name) {
-            console.warn(`tls-impersonate: unknown signature algorithm 0x${id.toString(16).padStart(4, '0')}, skipping`);
+            unsupported.push({ kind: 'signatureAlgorithm', id, reason: 'not a known signature algorithm' });
             continue;
         }
         sigalgs.push(name);
@@ -396,9 +429,45 @@ export function impersonate(
 
     // We build TLS 1.2 and 1.3 cipher strings separately to preserve order,
     // but Node's ciphers option combines them (splitting on TLS_ prefix).
-    // Call setCipherSuites directly to set the TLS 1.3 order independently.
+    // Set the TLS 1.3 ciphersuite order independently via the native addon.
     if (ciphersuitesString) {
-        (ctx as any).context.setCipherSuites(ciphersuitesString);
+        setCiphersuites(ctx, ciphersuitesString);
+    }
+
+    // Ciphers requested but not compiled into this OpenSSL (e.g. 3DES on
+    // OpenSSL 3.5+) are silently dropped from the context. Report the gap.
+    const configuredCiphers = new Set(getCiphers(ctx));
+    for (const id of requestedCipherIds) {
+        if (!configuredCiphers.has(id)) {
+            unsupported.push({ kind: 'cipherSuite', id, reason: 'not available in this OpenSSL build' });
+        }
+    }
+
+    // OpenSSL controls the ec_point_formats content (we cannot set it yet), so
+    // a spec asking for a different set than this OpenSSL advertises cannot be
+    // reproduced - e.g. Chrome's [0] on OpenSSL < 3.6, which sends [0,1,2].
+    if (extTypes.has(EXT_EC_POINT_FORMATS)) {
+        const requested = spec.ecPointFormats ?? [0];
+        const emitted = opensslEcPointFormats();
+        const matches = requested.length === emitted.length &&
+            requested.every((f, i) => f === emitted[i]);
+        if (!matches) {
+            unsupported.push({
+                kind: 'extension',
+                id: EXT_EC_POINT_FORMATS,
+                reason: `ec_point_formats content is controlled by OpenSSL (advertises [${emitted.join(',')}]) and cannot be set`,
+            });
+        }
+    }
+
+    // Padding (RFC 7685) is always reported when requested. OpenSSL decides whether to emit it
+    // from the final ClientHello size, so we enable it below but can't really control it.
+    if (extTypes.has(EXT_PADDING)) {
+        unsupported.push({
+            kind: 'extension',
+            id: EXT_PADDING,
+            reason: 'padding (RFC 7685) is emitted by OpenSSL only for a 256-511 byte ClientHello and cannot be fully controlled',
+        });
     }
 
     if (!extTypes.has(EXT_ENCRYPT_THEN_MAC)) {
@@ -426,8 +495,15 @@ export function impersonate(
             : [2]; // Default to brotli
         try {
             enableCompressCertificate(ctx, algorithms);
-        } catch {
-            // Certificate compression not available in this OpenSSL build
+        } catch (e) {
+            // Degrade gracefully only when this OpenSSL build lacks certificate
+            // compression; surface any other failure (e.g. unsupported runtime).
+            if ((e as { code?: string }).code !== 'ERR_CERT_COMPRESSION') throw e;
+            unsupported.push({
+                kind: 'extension',
+                id: EXT_COMPRESS_CERTIFICATE,
+                reason: 'certificate compression not available in this OpenSSL build',
+            });
         }
     }
 
@@ -455,8 +531,10 @@ export function impersonate(
                         context: customExtContext,
                         data,
                     });
-                } catch {
-                    // Truly predefined — OpenSSL handles it internally
+                } catch (e) {
+                    // Only swallow the expected "already handled internally by
+                    // OpenSSL" failure; surface anything else.
+                    if ((e as { code?: string }).code !== 'ERR_ADD_CUSTOM_EXT') throw e;
                 }
             }
             continue;
@@ -464,17 +542,28 @@ export function impersonate(
 
         const data = ext.data ?? getDefaultExtensionData(ext.type);
         if (data === undefined) {
-            throw new Error(
-                `Extension type ${ext.type} requires data ` +
-                `(non-predefined extension with no built-in default)`
-            );
+            unsupported.push({
+                kind: 'extension',
+                id: ext.type,
+                reason: 'non-predefined extension with no data and no built-in default',
+            });
+            continue;
         }
-        addCustomExtension(ctx, {
-            extensionType: ext.type,
-            context: customExtContext,
-            data,
-        });
+        try {
+            addCustomExtension(ctx, {
+                extensionType: ext.type,
+                context: customExtContext,
+                data,
+            });
+        } catch (e) {
+            if ((e as { code?: string }).code !== 'ERR_ADD_CUSTOM_EXT') throw e;
+            unsupported.push({
+                kind: 'extension',
+                id: ext.type,
+                reason: 'OpenSSL rejected the custom extension',
+            });
+        }
     }
 
-    return { secureContext: ctx, connectOptions: connectOpts };
+    return { secureContext: ctx, connectOptions: connectOpts, unsupported };
 }

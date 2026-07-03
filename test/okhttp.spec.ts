@@ -92,6 +92,9 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
         const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ecPointFormats).to.deep.equal([0]);
+    }, () => {
+        const { unsupported } = impersonate(okhttpSpec);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
     }));
 
     it('should match OkHttp JA4 fingerprint', async () => {
@@ -107,6 +110,9 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
         const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja3).to.equal(OKHTTP_EXPECTED_JA3);
+    }, () => {
+        const { unsupported } = impersonate(okhttpSpec);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
     }));
 
     runRealWorldTests('OkHttp', okhttpSpec);

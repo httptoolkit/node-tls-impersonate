@@ -264,23 +264,35 @@ export async function verifyRemoteHandshake(
     throw new Error(`Handshake to ${hostname} failed: ${result.error}`);
 }
 
+/**
+ * Wrap a fingerprint test that some builds cannot fully satisfy. `test` runs
+ * normally, but on the Node versions matched by `nodeVersions` it is expected to
+ * fail - and when it does, `antiTest` must pass instead. Use `antiTest` to assert
+ * that the shortfall is reported in impersonate()'s `unsupported` result.
+ *
+ * If `test` unexpectedly passes on a matched version, this throws so the range
+ * (and anti-test) get revisited.
+ */
 export function expectedFailure(
     nodeVersions: string,
-    fn: (this: Mocha.Context) => Promise<void>
+    test: (this: Mocha.Context) => Promise<void>,
+    antiTest: (this: Mocha.Context) => void | Promise<void>,
 ): (this: Mocha.Context) => Promise<void> {
-    const shouldExpectFailure = satisfies(process.version, nodeVersions, { includePrerelease: true });
+    const shouldFail = satisfies(process.version, nodeVersions, { includePrerelease: true });
 
     return async function (this: Mocha.Context) {
+        let failure: Error | undefined;
         try {
-            await fn.call(this);
+            await test.call(this);
         } catch (e) {
-            if (shouldExpectFailure && e instanceof Error && e.name === 'AssertionError') {
-                this.skip(); // Failed as expected on this version
-                return;
-            }
-            throw e;
+            if (e instanceof Error && e.name === 'AssertionError') failure = e;
+            else throw e;
         }
-        if (shouldExpectFailure) {
+
+        if (failure) {
+            if (!shouldFail) throw failure; // unexpected failure on this version
+            await antiTest.call(this);      // expected failure: it must be reported
+        } else if (shouldFail) {
             throw new Error(
                 `Expected this test to fail on Node ${process.version} (range: ${nodeVersions}), ` +
                 'but it passed — the underlying issue may be fixed. ' +

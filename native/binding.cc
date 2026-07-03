@@ -376,7 +376,7 @@ napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
     if (ext_data->add_cb) napi_delete_reference(env, ext_data->add_cb);
     if (ext_data->parse_cb) napi_delete_reference(env, ext_data->parse_cb);
     delete ext_data;
-    napi_throw_error(env, nullptr,
+    napi_throw_error(env, "ERR_ADD_CUSTOM_EXT",
         "SSL_CTX_add_custom_ext failed (duplicate or internally-handled "
         "extension type?)");
     return nullptr;
@@ -446,13 +446,75 @@ napi_value EnableCompressCertificate(napi_env env, napi_callback_info info) {
   int rc = SSL_CTX_set1_cert_comp_preference(ssl_ctx, alg_ids.data(),
                                              static_cast<size_t>(len));
   if (rc != 1) {
-    napi_throw_error(env, nullptr,
+    napi_throw_error(env, "ERR_CERT_COMPRESSION",
         "SSL_CTX_set1_cert_comp_preference failed "
         "(unsupported compression algorithm?)");
     return nullptr;
   }
 
   return nullptr;
+}
+
+// setCiphersuites(nativeCtx, ciphersuites) - sets the TLS 1.3 ciphersuite list
+// and order (SSL_CTX_set_ciphersuites). The OpenSSL API differs for TLS 1.2
+// (exposed by Node ciphers option) and 1.3 (not exposed at all).
+napi_value SetCiphersuites(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc < 2) {
+    napi_throw_type_error(env, nullptr,
+        "Expected 2 arguments: nativeCtx, ciphersuites");
+    return nullptr;
+  }
+
+  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
+  if (ssl_ctx == nullptr) return nullptr;
+
+  size_t len = 0;
+  if (napi_get_value_string_utf8(env, argv[1], nullptr, 0, &len) != napi_ok) {
+    napi_throw_type_error(env, nullptr, "ciphersuites must be a string");
+    return nullptr;
+  }
+  std::vector<char> buf(len + 1);
+  napi_get_value_string_utf8(env, argv[1], buf.data(), buf.size(), &len);
+
+  if (SSL_CTX_set_ciphersuites(ssl_ctx, buf.data()) != 1) {
+    napi_throw_error(env, "ERR_SET_CIPHERSUITES",
+        "SSL_CTX_set_ciphersuites failed (invalid TLS 1.3 ciphersuite string?)");
+    return nullptr;
+  }
+  return nullptr;
+}
+
+// getCiphers(nativeCtx) -> number[] of the IANA cipher ids actually configured
+// on the context. Ciphers requested via the cipher string but not compiled into
+// this OpenSSL (e.g. 3DES) are silently dropped, this reveals what survived.
+napi_value GetCiphers(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc < 1) {
+    napi_throw_type_error(env, nullptr, "Expected 1 argument: nativeCtx");
+    return nullptr;
+  }
+
+  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
+  if (ssl_ctx == nullptr) return nullptr;
+
+  STACK_OF(SSL_CIPHER)* ciphers = SSL_CTX_get_ciphers(ssl_ctx);
+  int count = ciphers ? sk_SSL_CIPHER_num(ciphers) : 0;
+  if (count < 0) count = 0;
+
+  napi_value result;
+  napi_create_array_with_length(env, count, &result);
+  for (int i = 0; i < count; i++) {
+    const SSL_CIPHER* c = sk_SSL_CIPHER_value(ciphers, i);
+    napi_value id;
+    napi_create_uint32(env, SSL_CIPHER_get_protocol_id(c), &id);
+    napi_set_element(env, result, i, id);
+  }
+  return result;
 }
 
 // enablePostHandshakeAuth(nativeCtx)
@@ -528,6 +590,10 @@ napi_value Init(napi_env env, napi_value exports) {
      nullptr, nullptr, napi_enumerable, nullptr},
     {"enablePostHandshakeAuth", nullptr, EnablePostHandshakeAuth, nullptr,
      nullptr, nullptr, napi_enumerable, nullptr},
+    {"setCiphersuites", nullptr, SetCiphersuites, nullptr, nullptr, nullptr,
+     napi_enumerable, nullptr},
+    {"getCiphers", nullptr, GetCiphers, nullptr, nullptr, nullptr,
+     napi_enumerable, nullptr},
     {"setOptions", nullptr, SetOptions, nullptr, nullptr, nullptr,
      napi_enumerable, nullptr},
     {"clearOptions", nullptr, ClearOptions, nullptr, nullptr, nullptr,

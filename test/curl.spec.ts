@@ -42,6 +42,10 @@ const curlSpec: ClientHelloSpec = {
         0x0303, 0x0301, 0x0302,
         0x0402, 0x0502, 0x0602,
     ],
+    // curl links OpenSSL, which advertises all three EC point formats - the
+    // same set Node's OpenSSL sends, so this reproduces exactly (unlike the
+    // BoringSSL/NSS clients that send only [0]). This is why curl's JA3 matches.
+    ecPointFormats: [0, 1, 2],
     alpnProtocols: ['h2', 'http/1.1'],
 };
 
@@ -105,6 +109,9 @@ describe('Curl TLS fingerprint impersonation', () => {
         expect(hello.ja4).to.equal(CURL_EXPECTED_JA4);
     });
 
+    // curl requests [0,1,2], exactly what OpenSSL < 3.6 sends, so its JA3 matches
+    // today (unlike the [0]-only clients). If OpenSSL 3.6 switches to [0] this
+    // will start failing - the intended alert to add ec_point handling for curl.
     it('should match curl JA3 fingerprint', async () => {
         const { secureContext, connectOptions } = impersonate(curlSpec);
         const hello = await captureClientHello({ secureContext, ...connectOptions });

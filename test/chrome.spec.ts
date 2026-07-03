@@ -92,6 +92,9 @@ describe('Chrome TLS fingerprint impersonation', () => {
 
         expect(new Set(hello.extensions)).to.deep.equal(new Set(CHROME_EXPECTED_EXTENSIONS));
         expect(hello.extensions).to.have.length(CHROME_EXPECTED_EXTENSIONS.length);
+    }, () => {
+        const { unsupported } = impersonate(chromeSpec);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 27)).to.be.true;
     }));
 
     // Requires OpenSSL EC point format fix (OpenSSL PR 26990)
@@ -100,6 +103,9 @@ describe('Chrome TLS fingerprint impersonation', () => {
         const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ecPointFormats).to.deep.equal([0]);
+    }, () => {
+        const { unsupported } = impersonate(chromeSpec);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
     }));
 
     // Depends on the correct extension set (certificate compression, Node 26.4.0+).
@@ -109,6 +115,9 @@ describe('Chrome TLS fingerprint impersonation', () => {
         const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja4).to.equal(CHROME_EXPECTED_JA4);
+    }, () => {
+        const { unsupported } = impersonate(chromeSpec);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 27)).to.be.true;
     }));
 
     it('should match Chrome JA3 fingerprint', expectedFailure('*', async () => {
@@ -116,6 +125,9 @@ describe('Chrome TLS fingerprint impersonation', () => {
         const hello = await captureClientHello({ secureContext, ...connectOptions });
 
         expect(hello.ja3).to.equal(CHROME_EXPECTED_JA3);
+    }, () => {
+        const { unsupported } = impersonate(chromeSpec);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
     }));
 
     runRealWorldTests('Chrome', chromeSpec);
