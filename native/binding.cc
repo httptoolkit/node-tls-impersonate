@@ -398,6 +398,15 @@ napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
   return nullptr;
 }
 
+// getSSLCtxAvailable() -> bool. True when node::crypto::GetSSLCtx resolved (i.e.
+// Node >= 24.15 exports it). Cheap runtime-support probe; needs no SecureContext.
+napi_value GetSSLCtxAvailable(napi_env env, napi_callback_info info) {
+  auto* get_ssl_ctx = node::crypto::GetSSLCtx;
+  napi_value result;
+  napi_get_boolean(env, get_ssl_ctx != nullptr, &result);
+  return result;
+}
+
 // isPredefinedExtension(extType) -> bool
 napi_value IsPredefinedExtension(napi_env env, napi_callback_info info) {
   size_t argc = 1;
@@ -595,6 +604,8 @@ napi_value Init(napi_env env, napi_value exports) {
     {"addCustomExtension", nullptr, AddCustomExtension, nullptr, nullptr,
      nullptr, napi_enumerable, nullptr},
     {"isPredefinedExtension", nullptr, IsPredefinedExtension, nullptr, nullptr,
+     nullptr, napi_enumerable, nullptr},
+    {"getSSLCtxAvailable", nullptr, GetSSLCtxAvailable, nullptr, nullptr,
      nullptr, napi_enumerable, nullptr},
     {"enableCompressCertificate", nullptr, EnableCompressCertificate, nullptr,
      nullptr, nullptr, napi_enumerable, nullptr},

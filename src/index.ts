@@ -8,6 +8,7 @@ import {
     setCiphersuites,
     getCiphers,
     setOptions,
+    getSSLCtxAvailable,
     constants,
 } from './native.js';
 
@@ -328,6 +329,24 @@ function opensslEcPointFormats(): number[] {
 }
 
 // ─── Main Function ───────────────────────────────────────────────────────────
+
+/**
+ * Whether TLS impersonation works on this runtime at all: the native addon
+ * loaded and Node exposes `node::crypto::GetSSLCtx` (Node >= 24.15). Cheap and
+ * global - call it once and fall back to a default fingerprint if it returns
+ * false, rather than calling impersonate() and catching its runtime throw.
+ *
+ * impersonate() still throws on an unsupported runtime as a programmer-error
+ * guard; this is how callers avoid hitting it.
+ */
+export function isSupported(): boolean {
+    try {
+        return getSSLCtxAvailable();
+    } catch {
+        // Native addon failed to load at all (wrong platform, build missing, ...).
+        return false;
+    }
+}
 
 /**
  * Create a TLS SecureContext that impersonates the given ClientHello specification.

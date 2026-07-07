@@ -15,6 +15,7 @@ interface NativeBinding {
     ): void;
 
     isPredefinedExtension(extType: number): boolean;
+    getSSLCtxAvailable(): boolean;
 
     enableCompressCertificate(nativeCtx: object, algorithms: number[]): void;
     enablePostHandshakeAuth(nativeCtx: object): void;
@@ -98,6 +99,13 @@ export function addCustomExtension(
  */
 export function isPredefinedExtension(extType: number): boolean {
     return binding.isPredefinedExtension(extType);
+}
+
+/**
+ * Whether node::crypto::GetSSLCtx resolved on this runtime (Node >= 24.15).
+ */
+export function getSSLCtxAvailable(): boolean {
+    return binding.getSSLCtxAvailable();
 }
 
 /**
