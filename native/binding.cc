@@ -15,6 +15,7 @@
 #include <openssl/tls1.h>
 #include <cmath>
 #include <cstring>
+#include <new>
 #include <vector>
 
 // node::crypto::GetSSLCtx (a NODE_EXTERN since Node 24.15) unwraps a SecureContext
@@ -64,7 +65,15 @@ static SSL_CTX* GetSSLCtx(napi_env env, napi_value secure_context) {
     return nullptr;
   }
   v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  if (isolate == nullptr) {
+    napi_throw_error(env, nullptr, "tls-impersonate: no active V8 isolate");
+    return nullptr;
+  }
   v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  if (context.IsEmpty()) {
+    napi_throw_error(env, nullptr, "tls-impersonate: no active V8 context");
+    return nullptr;
+  }
   SSL_CTX* ssl_ctx = get_ssl_ctx(context, V8LocalFromNapi(secure_context));
   if (ssl_ctx == nullptr) {
     napi_throw_type_error(env, nullptr,
@@ -117,8 +126,13 @@ static int CustomExtAddCallback(SSL* s,
     return -1;
   }
 
-  napi_value cb, recv, argv[2], result;
-  napi_get_reference_value(env, data->add_cb, &cb);
+  napi_value cb = nullptr, recv, argv[2], result;
+  if (napi_get_reference_value(env, data->add_cb, &cb) != napi_ok ||
+      cb == nullptr) {
+    napi_close_handle_scope(env, scope);
+    *al = SSL_AD_INTERNAL_ERROR;
+    return -1;
+  }
   napi_get_undefined(env, &recv);
   napi_create_double(env, ext_type, &argv[0]);
   napi_create_double(env, context, &argv[1]);
@@ -212,8 +226,13 @@ static int CustomExtParseCallback(SSL* s,
     return 0;
   }
 
-  napi_value cb, recv, argv[3], result;
-  napi_get_reference_value(env, data->parse_cb, &cb);
+  napi_value cb = nullptr, recv, argv[3], result;
+  if (napi_get_reference_value(env, data->parse_cb, &cb) != napi_ok ||
+      cb == nullptr) {
+    napi_close_handle_scope(env, scope);
+    *al = SSL_AD_INTERNAL_ERROR;
+    return 0;
+  }
   napi_get_undefined(env, &recv);
   napi_create_double(env, ext_type, &argv[0]);
   napi_create_double(env, context, &argv[1]);
@@ -300,13 +319,18 @@ static bool RegisterCtxExtension(SSL_CTX* ctx, ExtensionData* data) {
   auto* list = static_cast<std::vector<ExtensionData*>*>(
       SSL_CTX_get_ex_data(ctx, index));
   if (list == nullptr) {
-    list = new std::vector<ExtensionData*>();
+    list = new (std::nothrow) std::vector<ExtensionData*>();
+    if (list == nullptr) return false;
     if (SSL_CTX_set_ex_data(ctx, index, list) != 1) {
       delete list;
       return false;
     }
   }
-  list->push_back(data);
+  try {
+    list->push_back(data);
+  } catch (...) {
+    return false;  // ext_data stays owned by the SSL_CTX callbacks; no crash
+  }
   return true;
 }
 
@@ -342,7 +366,11 @@ napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
     return nullptr;
   }
 
-  ExtensionData* ext_data = new ExtensionData();
+  ExtensionData* ext_data = new (std::nothrow) ExtensionData();
+  if (ext_data == nullptr) {
+    napi_throw_error(env, nullptr, "tls-impersonate: out of memory");
+    return nullptr;
+  }
   ext_data->env = env;
   ext_data->add_cb = nullptr;
   ext_data->parse_cb = nullptr;
@@ -357,8 +385,20 @@ napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
     void* data;
     size_t len;
     napi_get_buffer_info(env, argv[3], &data, &len);
+    if (len > 0xFFFF) {  // a TLS extension's data is at most 65535 bytes
+      delete ext_data;
+      napi_throw_range_error(env, nullptr,
+          "extension data must be at most 65535 bytes");
+      return nullptr;
+    }
     if (len > 0) {
-      ext_data->static_data.resize(len);
+      try {
+        ext_data->static_data.resize(len);
+      } catch (...) {
+        delete ext_data;
+        napi_throw_error(env, nullptr, "tls-impersonate: out of memory");
+        return nullptr;
+      }
       memcpy(ext_data->static_data.data(), data, len);
     }
   } else if (add_type == napi_function) {
@@ -450,7 +490,17 @@ napi_value EnableCompressCertificate(napi_env env, napi_callback_info info) {
 
   uint32_t len;
   napi_get_array_length(env, argv[1], &len);
-  std::vector<int> alg_ids(len);
+  if (len > 255) {  // only a handful of compression algorithms exist
+    napi_throw_range_error(env, nullptr, "too many algorithms (max 255)");
+    return nullptr;
+  }
+  std::vector<int> alg_ids;
+  try {
+    alg_ids.resize(len);
+  } catch (...) {
+    napi_throw_error(env, nullptr, "tls-impersonate: out of memory");
+    return nullptr;
+  }
   for (uint32_t i = 0; i < len; i++) {
     napi_value element;
     napi_get_element(env, argv[1], i, &element);
@@ -495,7 +545,17 @@ napi_value SetCiphersuites(napi_env env, napi_callback_info info) {
     napi_throw_type_error(env, nullptr, "ciphersuites must be a string");
     return nullptr;
   }
-  std::vector<char> buf(len + 1);
+  if (len > 0xFFFF) {  // ciphersuite strings are short; reject absurd input
+    napi_throw_range_error(env, nullptr, "ciphersuites string too long");
+    return nullptr;
+  }
+  std::vector<char> buf;
+  try {
+    buf.resize(len + 1);
+  } catch (...) {
+    napi_throw_error(env, nullptr, "tls-impersonate: out of memory");
+    return nullptr;
+  }
   napi_get_value_string_utf8(env, argv[1], buf.data(), buf.size(), &len);
 
   if (SSL_CTX_set_ciphersuites(ssl_ctx, buf.data()) != 1) {
@@ -529,6 +589,7 @@ napi_value GetCiphers(napi_env env, napi_callback_info info) {
   napi_create_array_with_length(env, count, &result);
   for (int i = 0; i < count; i++) {
     const SSL_CIPHER* c = sk_SSL_CIPHER_value(ciphers, i);
+    if (c == nullptr) continue;  // defensive: not expected for i < count
     napi_value id;
     napi_create_uint32(env, SSL_CIPHER_get_protocol_id(c), &id);
     napi_set_element(env, result, i, id);
