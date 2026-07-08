@@ -1,6 +1,6 @@
 {
   "name": "tls-impersonate",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "TLS fingerprint control within Node.js's normal networking APIs ",
   "keywords": [
     "TLS",
