@@ -349,10 +349,55 @@ export function isSupported(): boolean {
 }
 
 /**
+ * The parsed-ClientHello shape that clientHelloToSpec / impersonateFromClientHello
+ * read. A read-tls-client-hello `TlsClientHelloMessage` satisfies this structurally
+ * so you can pass one straight in, but we avoid depending on that explicitly.
+ */
+export interface ParsedClientHello {
+    cipherSuites: number[];
+    extensions: Array<{ id: number; data: Record<string, unknown> | null }>;
+}
+
+// Extract and cast extension data to the relevant type
+function extensionField<T>(hello: ParsedClientHello, extId: number, field: string): T | undefined {
+    return hello.extensions.find((ext) => ext.id === extId)?.data?.[field] as T | undefined;
+}
+
+/**
+ * Convert a parsed ClientHello (from read-tls-client-hello) into a
+ * ClientHelloSpec: cipher suites, extension types in wire order, supported
+ * groups, signature algorithms, EC point formats and ALPN. GREASE values pass
+ * through as-is (impersonate handles them).
+ *
+ * Extension *data* is not carried over: impersonate regenerates predefined
+ * extensions and applies defaults for known custom ones, so the reproduction
+ * targets the fingerprint (types and order), not byte-exact custom payloads.
+ */
+function clientHelloToSpec(hello: ParsedClientHello): ClientHelloSpec {
+    return {
+        cipherSuites: hello.cipherSuites,
+        extensions: hello.extensions.map((ext) => ({ type: ext.id })),
+        supportedGroups: extensionField<number[]>(hello, 10, 'groups') ?? [],
+        signatureAlgorithms: extensionField<number[]>(hello, 13, 'algorithms') ?? [],
+        ecPointFormats: extensionField<number[]>(hello, 11, 'formats'),
+        alpnProtocols: extensionField<string[]>(hello, 16, 'protocols'),
+    };
+}
+
+/**
+ * Impersonate a captured ClientHello from read-tls-client-hello directly.
+ */
+export function impersonateFromClientHello(
+    hello: ParsedClientHello,
+    options?: tls.SecureContextOptions
+): ImpersonateResult {
+    return impersonate(clientHelloToSpec(hello), options);
+}
+
+/**
  * Create a TLS SecureContext that impersonates the given ClientHello specification.
  *
- * Takes a ClientHelloSpec (typically from a captured ClientHello) and reproduces
- * the TLS fingerprint as closely as possible using OpenSSL's available APIs.
+ * Takes a ClientHello spec, and reproduces the TLS fingerprint as closely as possible.
  */
 export function impersonate(
     spec: ClientHelloSpec,
