@@ -1,5 +1,5 @@
-import tls from 'node:tls';
-import crypto from 'node:crypto';
+import * as tls from 'node:tls';
+import * as crypto from 'node:crypto';
 import {
     addCustomExtension,
     isPredefinedExtension,
