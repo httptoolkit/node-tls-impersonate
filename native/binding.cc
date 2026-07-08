@@ -3,18 +3,37 @@
 //
 // Registered as a NAPI module, so a single prebuilt binary loads across all
 // Node ABIs (no NODE_MODULE_VERSION gate). The one Node-internal dependency,
-// node::crypto::GetSSLCtx, is resolved with dlsym and passed V8 handles bridged
-// from napi_value; both the bridge and that symbol are ABI-stable, so the same
-// binary works on any Node >= 24.15.0 that exports GetSSLCtx.
+// node::crypto::GetSSLCtx, is declared and linked directly (weak on GCC/Clang, so
+// its address is null and we throw cleanly on a Node that lacks it); V8 handles
+// are bridged from napi_value. Both the bridge and that symbol are ABI-stable and
+// the mangled name depends only on the signature, so one binary works on any Node
+// >= 24.15.0 that exports GetSSLCtx - no per-version build.
 
 #include <node_api.h>
 #include <v8.h>
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
-#include <dlfcn.h>
 #include <cmath>
 #include <cstring>
 #include <vector>
+
+// node::crypto::GetSSLCtx (a NODE_EXTERN since Node 24.15) unwraps a SecureContext
+// to its SSL_CTX. We declare the prototype ourselves so the compiler emits the
+// correctly mangled reference on every platform - no hardcoded symbol string.
+// Marked weak where the toolchain supports it, so on a Node that does not export
+// it the address is null and we throw cleanly rather than failing to load.
+#ifdef _WIN32
+#define TLS_IMPERSONATE_WEAK
+#else
+#define TLS_IMPERSONATE_WEAK __attribute__((weak))
+#endif
+
+namespace node {
+namespace crypto {
+TLS_IMPERSONATE_WEAK SSL_CTX* GetSSLCtx(v8::Local<v8::Context> context,
+                                        v8::Local<v8::Value> value);
+}  // namespace crypto
+}  // namespace node
 
 namespace {
 
@@ -33,21 +52,12 @@ static v8::Local<v8::Value> V8LocalFromNapi(napi_value v) {
 
 // ─── SSL_CTX resolution ──────────────────────────────────────────────────────
 
-using GetSSLCtxFunc = SSL_CTX* (*)(v8::Local<v8::Context>, v8::Local<v8::Value>);
-
-static GetSSLCtxFunc ResolveGetSSLCtx() {
-  // Mangled: node::crypto::GetSSLCtx(v8::Local<v8::Context>, v8::Local<v8::Value>)
-  return reinterpret_cast<GetSSLCtxFunc>(
-      dlsym(RTLD_DEFAULT,
-          "_ZN4node6crypto9GetSSLCtxEN2v85LocalINS1_7ContextEEENS2_INS1_5ValueEEE"));
-}
-
 // Resolve the SSL_CTX* behind a SecureContext value, throwing a JS exception
 // (and returning nullptr) if the runtime is unsupported or the value is invalid.
-// GetSSLCtx unwraps the outer tls.createSecureContext() wrapper itself.
+// node::crypto::GetSSLCtx unwraps the outer tls.createSecureContext() wrapper.
 static SSL_CTX* GetSSLCtx(napi_env env, napi_value secure_context) {
-  static GetSSLCtxFunc fn = ResolveGetSSLCtx();
-  if (fn == nullptr) {
+  auto* get_ssl_ctx = node::crypto::GetSSLCtx;  // null iff Node lacks the export
+  if (get_ssl_ctx == nullptr) {
     napi_throw_error(env, nullptr,
         "tls-impersonate requires Node.js >= 24.15.0 "
         "(node::crypto::GetSSLCtx is unavailable in this runtime)");
@@ -55,7 +65,7 @@ static SSL_CTX* GetSSLCtx(napi_env env, napi_value secure_context) {
   }
   v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::Local<v8::Context> context = isolate->GetCurrentContext();
-  SSL_CTX* ssl_ctx = fn(context, V8LocalFromNapi(secure_context));
+  SSL_CTX* ssl_ctx = get_ssl_ctx(context, V8LocalFromNapi(secure_context));
   if (ssl_ctx == nullptr) {
     napi_throw_type_error(env, nullptr,
         "Argument must be a TLS SecureContext");

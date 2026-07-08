@@ -3,11 +3,12 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
   schedule:
     - cron: '0 6 * * 1' # Weekly test to check new Node versions
 
 jobs:
-  build-and-test:
+  test:
     runs-on: ubuntu-latest
 
     strategy:
@@ -18,19 +19,113 @@ jobs:
           - latest  # Full fidelity (cert compression) from 26.4
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
           check-latest: true
 
-      - name: Node version
-        run: node --version
-      - name: OpenSSL version
-        run: node -e "console.log('OpenSSL', process.versions.openssl)"
+      - run: node -e "console.log('Node', process.version, '| OpenSSL', process.versions.openssl)"
 
-      - run: npm ci
-      - run: npm run build
+      - run: npm ci --ignore-scripts
+
+      # Build the shipped artifact (a --napi prebuild) and prove it loads and
+      # works before running the suite against it.
+      - run: npm run prebuild
+      - run: npm run test:smoke
+
+      - run: npm run build:ts
       - run: npm test
+
+  prebuild:
+    name: prebuild (${{ matrix.name }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64-glibc,   runs-on: ubuntu-latest }
+          - { name: linux-arm64-glibc, runs-on: ubuntu-24.04-arm }
+          - { name: darwin-x64,        runs-on: macos-15-intel }
+          - { name: darwin-arm64,      runs-on: macos-latest }
+          - { name: win32-x64,         runs-on: windows-latest }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm run prebuild
+      - run: npm run test:smoke
+      - run: tar -czf prebuilds-${{ matrix.name }}.tar.gz prebuilds
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prebuilds-${{ matrix.name }}
+          path: prebuilds-${{ matrix.name }}.tar.gz
+
+  # Prove the single linux-x64 prebuild loads across the whole supported Node
+  # range (24.15+), not just the Node it was built with.
+  smoke-across-node:
+    name: smoke (node ${{ matrix.node-version }}, reuse prebuild)
+    needs: prebuild
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [24, 26, latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v8
+        with:
+          name: prebuilds-linux-x64-glibc
+      - run: tar -xzf prebuilds-linux-x64-glibc.tar.gz
+      - run: npm run test:smoke
+
+  publish:
+    name: Publish to npm
+    needs: [test, prebuild, smoke-across-node]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/tls-impersonate
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing (tokenless OIDC) needs npm >= 11.5.1.
+      - run: npm install -g npm@latest
+
+      - run: npm ci --ignore-scripts
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: prebuilds-*
+          path: artifacts
+          merge-multiple: true
+      - run: for f in artifacts/*.tar.gz; do tar -xzf "$f"; done
+      - run: ls -R prebuilds
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Publishing $PKG_VERSION"
+
+      - run: npm publish --provenance --access public

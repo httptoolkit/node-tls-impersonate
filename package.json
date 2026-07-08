@@ -34,13 +34,16 @@
     "node": ">=24.15.0"
   },
   "os": [
-    "linux"
+    "linux",
+    "darwin",
+    "win32"
   ],
   "scripts": {
     "install": "node-gyp-build",
     "build": "node-gyp rebuild && tsc",
     "build:ts": "tsc",
-    "prepack": "test -n \"$KEEP_PREBUILDS\" || rm -rf prebuilds",
+    "prebuild": "prebuildify --napi --strip --tag-libc",
+    "test:smoke": "node scripts/smoke-prebuild.cjs",
     "prepublishOnly": "tsc",
     "test": "TS_NODE_TRANSPILE_ONLY=true mocha"
   },
@@ -56,6 +59,8 @@
     "@types/semver": "^7.7.1",
     "chai": "^6.2.2",
     "mocha": "^11.7.5",
+    "node-gyp": "^13.0.0",
+    "prebuildify": "^6.0.1",
     "read-tls-client-hello": "^2.0.0",
     "semver": "^7.7.4",
     "ts-node": "^10.9.2",
