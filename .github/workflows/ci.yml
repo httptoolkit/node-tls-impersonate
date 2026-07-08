@@ -119,13 +119,33 @@ jobs:
       - run: ls -R prebuilds
 
       - name: Verify tag matches package.json version
+        id: version-check
         run: |
           TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "Tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "Error: Tag version (v$TAG_VERSION) does not match package.json version ($PACKAGE_VERSION)"
             exit 1
           fi
-          echo "Publishing $PKG_VERSION"
+          echo "✓ Tag version matches package.json version: $PACKAGE_VERSION"
 
-      - run: npm publish --provenance --access public
+          # Check if version matches strict X.Y.Z format (stable release)
+          if echo "$PACKAGE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Stable release version detected: $PACKAGE_VERSION"
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          else
+            echo "Prerelease version detected: $PACKAGE_VERSION"
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish to npm
+        run: |
+          if [ "${{ steps.version-check.outputs.is_prerelease }}" == "true" ]; then
+            echo "Publishing untagged prerelease"
+            npm stage publish --provenance --tag test
+            # We have to publish with a tag (so we use 'test') but we can clean it up:
+            npm dist-tag rm tls-impersonate test --silent
+          else
+            echo "Publishing stable release with 'latest' tag"
+            npm stage publish --provenance
+          fi

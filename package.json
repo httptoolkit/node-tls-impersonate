@@ -10,13 +10,13 @@
     "extensions",
     "control"
   ],
-  "homepage": "https://github.com/httptoolkit/tls-impersonate#readme",
+  "homepage": "https://github.com/httptoolkit/node-tls-impersonate#readme",
   "bugs": {
-    "url": "https://github.com/httptoolkit/tls-impersonate/issues"
+    "url": "https://github.com/httptoolkit/node-tls-impersonate/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/httptoolkit/tls-impersonate.git"
+    "url": "git+https://github.com/httptoolkit/node-tls-impersonate.git"
   },
   "license": "Apache-2.0",
   "author": "Tim Perry <tim@httptoolkit.com>",
