@@ -8,6 +8,8 @@ import {
     setCiphersuites,
     getCiphers,
     setOptions,
+    setSecurityLevel,
+    installSecureSigalgCallback,
     getSSLCtxAvailable,
     constants,
 } from './native.js';
@@ -144,10 +146,6 @@ const SIGALG_NAMES: Record<number, string> = {
     0x0602: 'dsa_sha512',
 };
 
-const SHA1_SIGALG_IDS = new Set([0x0201, 0x0203]);
-
-/** Cipher IDs that require @SECLEVEL=0 (3DES, RC4, etc.) */
-const LEGACY_CIPHER_IDS = new Set([0xc008, 0xc012, 0x000a, 0x0016]);
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -196,6 +194,21 @@ export interface ImpersonateResult {
      *  was reproduced fully. impersonate() never throws for these - it produces
      *  the closest fingerprint it can and records the gaps here. */
     unsupported: UnsupportedFeature[];
+}
+
+export interface ImpersonateOptions extends tls.SecureContextOptions {
+    /**
+     * Emulating some settings requires reducing the OpenSSL security level, which
+     * can allow insecure TLS connections. This is disabled by default, but can be
+     * enabled with 'insecure' mode here.
+     *
+     * This isn't required for all insecure features in fingerprints - many can be
+     * supported by advertising them but rejecting if used (as many other clients
+     * already do) so this is only for specific cases where that's not possible.
+     * An issues caused by the default 'secure' mode will be reported in the
+     * 'unsupported' result explicitly.
+     */
+    security?: 'secure' | 'insecure';
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -389,7 +402,7 @@ function clientHelloToSpec(hello: ParsedClientHello): ClientHelloSpec {
  */
 export function impersonateFromClientHello(
     hello: ParsedClientHello,
-    options?: tls.SecureContextOptions
+    options?: ImpersonateOptions
 ): ImpersonateResult {
     return impersonate(clientHelloToSpec(hello), options);
 }
@@ -401,20 +414,26 @@ export function impersonateFromClientHello(
  */
 export function impersonate(
     spec: ClientHelloSpec,
-    options?: tls.SecureContextOptions
+    options?: ImpersonateOptions
 ): ImpersonateResult {
+    const { security = 'secure', ...secureContextOptions } = options ?? {};
+
+    if (security !== 'secure' && security !== 'insecure') {
+        throw new RangeError("security must be 'secure' or 'insecure'");
+    }
+
     const unsupported: UnsupportedFeature[] = [];
     const tls13Ciphers: string[] = [];
     const tls12Ciphers: string[] = [];
     const requestedCipherIds: number[] = [];
-    let wantScsv = false;
-    let hasLegacyCipher = false;
+    let scsvId: number | undefined;
     for (const id of spec.cipherSuites) {
         if (isGreaseValue(id)) continue;
         if (id === 0x00ff || id === 0x5600) {
-            // SCSV values — OpenSSL adds these automatically under certain conditions.
-            // We track the request and configure minVersion/secLevel to trigger it.
-            wantScsv = true;
+            // SCSV values - OpenSSL adds these automatically under certain conditions.
+            // We track the request and configure minVersion to trigger it. Keep the
+            // first occurrence only, so it maps to a single feature/gap.
+            scsvId ??= id;
             continue;
         }
         const name = CIPHER_NAMES[id];
@@ -422,7 +441,6 @@ export function impersonate(
             unsupported.push({ kind: 'cipherSuite', id, reason: 'not a known cipher suite' });
             continue;
         }
-        if (LEGACY_CIPHER_IDS.has(id)) hasLegacyCipher = true;
         requestedCipherIds.push(id);
         if (id >= 0x1300 && id <= 0x13ff) {
             tls13Ciphers.push(name);
@@ -443,7 +461,6 @@ export function impersonate(
     }
 
     const sigalgs: string[] = [];
-    let hasSha1 = false;
     for (const id of spec.signatureAlgorithms) {
         if (isGreaseValue(id)) continue;
         const name = SIGALG_NAMES[id];
@@ -452,13 +469,9 @@ export function impersonate(
             continue;
         }
         sigalgs.push(name);
-        if (SHA1_SIGALG_IDS.has(id)) hasSha1 = true;
     }
 
-    // @SECLEVEL=0 is needed for SHA-1 sigalgs, legacy ciphers (3DES),
-    // and to trigger SCSV when the spec includes TLS_EMPTY_RENEGOTIATION_INFO_SCSV.
-    const needSecLevel0 = hasSha1 || hasLegacyCipher || wantScsv;
-    const cipherString = tls12Ciphers.join(':') + (needSecLevel0 ? ':@SECLEVEL=0' : '');
+    const cipherString = tls12Ciphers.join(':');
     const ciphersuitesString = tls13Ciphers.join(':');
 
     // Scan extensions for config-driven features
@@ -472,23 +485,37 @@ export function impersonate(
         connectOpts.ALPNProtocols = spec.alpnProtocols;
     }
 
-    // OpenSSL only adds SCSV (0x00ff) when @SECLEVEL=0 and minVersion <= TLSv1.
-    // We set minVersion='TLSv1' to trigger SCSV inclusion, then immediately
-    // block TLSv1.0/1.1 negotiation via SSL_OP flags.
+    // OpenSSL only emits SCSV (0x00ff/0x5600) when at security level 0 with
+    // minVersion <= TLSv1, i.e. only in 'insecure' mode. When we can emit it we
+    // lower minVersion to trigger inclusion, then block TLSv1.0/1.1 negotiation
+    // via SSL_OP flags so the floor stays at TLS 1.2. In 'secure' mode SCSV can't
+    // be emitted, so minVersion stays at TLS 1.2 and the gap is reported below.
+    const emitScsv = security === 'insecure' && scsvId !== undefined;
+
     const ctx = tls.createSecureContext({
-        ...options,
+        ...secureContextOptions,
         ciphers: cipherString,
         sigalgs: sigalgs.join(':'),
         ecdhCurve: groups.join(':'),
-        minVersion: wantScsv ? 'TLSv1' as tls.SecureVersion : 'TLSv1.2',
+        minVersion: emitScsv ? 'TLSv1' as tls.SecureVersion : 'TLSv1.2',
         maxVersion: 'TLSv1.3',
     });
 
-    if (wantScsv) {
+    if (emitScsv) {
         setOptions(ctx,
             crypto.constants.SSL_OP_NO_TLSv1 |
             crypto.constants.SSL_OP_NO_TLSv1_1
         );
+    }
+
+    if (security === 'insecure') {
+        setSecurityLevel(ctx, 0);
+    } else {
+        installSecureSigalgCallback(ctx);
+        if (scsvId !== undefined) {
+            unsupported.push({ kind: 'cipherSuite', id: scsvId,
+                reason: "SCSV is only offered in 'insecure' mode" });
+        }
     }
 
     // We build TLS 1.2 and 1.3 cipher strings separately to preserve order,

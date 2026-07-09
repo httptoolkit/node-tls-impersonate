@@ -23,6 +23,9 @@ interface NativeBinding {
     getCiphers(nativeCtx: object): number[];
     setOptions(nativeCtx: object, options: number): void;
     clearOptions(nativeCtx: object, options: number): void;
+    setSecurityLevel(nativeCtx: object, level: number): void;
+    getSecurityLevel(nativeCtx: object): number;
+    installSecureSigalgCallback(nativeCtx: object): void;
 
     constants: {
         SSL_EXT_TLS_ONLY: number;
@@ -164,4 +167,24 @@ export function setOptions(ctx: tls.SecureContext, options: number): void {
  */
 export function clearOptions(ctx: tls.SecureContext, options: number): void {
     binding.clearOptions(ctx, options);
+}
+
+export function setSecurityLevel(ctx: tls.SecureContext, level: number): void {
+    binding.setSecurityLevel(ctx, level);
+}
+
+export function getSecurityLevel(ctx: tls.SecureContext): number {
+    return binding.getSecurityLevel(ctx);
+}
+
+/**
+ * Install a security callback that keeps SHA-1 signature algorithms in the
+ * advertised ClientHello (preserving the fingerprint) while delegating every
+ * other security decision - including the peer's certificate and signature
+ * checks - to OpenSSL's default policy at the context's current security level.
+ * This is how 'secure' mode reproduces a SHA-1-bearing fingerprint without
+ * relaxing what the handshake accepts from the server.
+ */
+export function installSecureSigalgCallback(ctx: tls.SecureContext): void {
+    binding.installSecureSigalgCallback(ctx);
 }

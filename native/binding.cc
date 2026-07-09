@@ -651,6 +651,122 @@ napi_value ClearOptions(napi_env env, napi_callback_info info) {
   return ChangeOptions(env, info, true);
 }
 
+// setSecurityLevel(nativeCtx, level) - SSL_CTX_set_security_level. Gates both
+// what we offer (filters SHA-1 sigalgs / legacy ciphers out of the ClientHello)
+// and what we accept (weak server certs/keys/DH), so callers can trade
+// fingerprint fidelity against server-crypto strictness explicitly.
+napi_value SetSecurityLevel(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc < 2) {
+    napi_throw_type_error(env, nullptr,
+        "Expected 2 arguments: nativeCtx, level");
+    return nullptr;
+  }
+
+  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
+  if (ssl_ctx == nullptr) return nullptr;
+
+  int32_t level;
+  if (napi_get_value_int32(env, argv[1], &level) != napi_ok) {
+    napi_throw_type_error(env, nullptr, "level must be a number");
+    return nullptr;
+  }
+  // OpenSSL defines security levels 0-5; reject anything outside that range
+  // rather than passing it through to SSL_CTX_set_security_level.
+  if (level < 0 || level > 5) {
+    napi_throw_range_error(env, nullptr,
+        "security level must be between 0 and 5");
+    return nullptr;
+  }
+
+  SSL_CTX_set_security_level(ssl_ctx, level);
+  return nullptr;
+}
+
+// installSecureSigalgCallback(nativeCtx) - decouples fingerprint fidelity from
+// server-crypto acceptance. OpenSSL's security level filters SHA-1 sigalgs out
+// of the ClientHello (via SSL_SECOP_SIGALG_SUPPORTED) at the same level that
+// rejects the peer's weak certs/keys. We install a callback that allows any
+// requested sigalg to be *advertised* (so the fingerprint is preserved) while
+// delegating every other decision - including the peer's signature and cert
+// checks (SSL_SECOP_SIGALG_CHECK, SSL_SECOP_CA_MD, SSL_SECOP_EE_KEY, ...) - to
+// OpenSSL's default callback, so acceptance stays at the context's (unchanged)
+// security level. The level is left untouched deliberately: it keeps acceptance
+// exactly as strict as a normal Node HTTPS client on this build.
+typedef int (*sec_cb_t)(const SSL* s, const SSL_CTX* ctx, int op, int bits,
+                        int nid, void* other, void* ex);
+
+// OpenSSL's default (level-based) security callback captured once at module init.
+static sec_cb_t g_default_sec_cb = nullptr;
+
+static int ImpersonateSecurityCb(const SSL* s, const SSL_CTX* ctx, int op,
+                                 int bits, int nid, void* other, void* ex) {
+  if (op == SSL_SECOP_SIGALG_SUPPORTED) return 1;
+  sec_cb_t def = g_default_sec_cb;
+  if (def == nullptr) return 0;  // fail safe; unreachable, install requires it
+  return def(s, ctx, op, bits, nid, other, ex);
+}
+
+// Store the default callback from a context, once. Guarded so we never store our
+// own callback (no self-reference) and never overwrite an existing capture, so
+// concurrent callers converge on the same singleton value.
+static void CaptureDefaultSecurityCallbackFrom(SSL_CTX* ctx) {
+  if (g_default_sec_cb != nullptr || ctx == nullptr) return;
+  sec_cb_t cur = SSL_CTX_get_security_callback(ctx);
+  if (cur != nullptr && cur != ImpersonateSecurityCb) g_default_sec_cb = cur;
+}
+
+static void CaptureDefaultSecurityCallback() {
+  SSL_CTX* probe = SSL_CTX_new(TLS_client_method());
+  if (probe == nullptr) return;
+  CaptureDefaultSecurityCallbackFrom(probe);
+  SSL_CTX_free(probe);
+}
+
+napi_value InstallSecureSigalgCallback(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc < 1) {
+    napi_throw_type_error(env, nullptr, "Expected 1 argument: nativeCtx");
+    return nullptr;
+  }
+
+  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
+  if (ssl_ctx == nullptr) return nullptr;
+
+  // Fallback if the init-time capture could not run for some reason.
+  CaptureDefaultSecurityCallbackFrom(ssl_ctx);
+
+  if (g_default_sec_cb == nullptr) {
+    napi_throw_error(env, "ERR_NO_DEFAULT_SECURITY_CALLBACK",
+        "tls-impersonate: no default OpenSSL security callback to delegate to");
+    return nullptr;
+  }
+
+  SSL_CTX_set_security_callback(ssl_ctx, ImpersonateSecurityCb);
+  return nullptr;
+}
+
+napi_value GetSecurityLevel(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  if (argc < 1) {
+    napi_throw_type_error(env, nullptr, "Expected 1 argument: nativeCtx");
+    return nullptr;
+  }
+
+  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
+  if (ssl_ctx == nullptr) return nullptr;
+
+  napi_value result;
+  napi_create_int32(env, SSL_CTX_get_security_level(ssl_ctx), &result);
+  return result;
+}
+
 // ─── Module initialization ───────────────────────────────────────────────────
 
 static void SetConstant(napi_env env, napi_value obj, const char* name,
@@ -661,6 +777,9 @@ static void SetConstant(napi_env env, napi_value obj, const char* name,
 }
 
 napi_value Init(napi_env env, napi_value exports) {
+  // Capture OpenSSL's default security callback once at startup
+  CaptureDefaultSecurityCallback();
+
   napi_property_descriptor methods[] = {
     {"addCustomExtension", nullptr, AddCustomExtension, nullptr, nullptr,
      nullptr, napi_enumerable, nullptr},
@@ -680,6 +799,12 @@ napi_value Init(napi_env env, napi_value exports) {
      napi_enumerable, nullptr},
     {"clearOptions", nullptr, ClearOptions, nullptr, nullptr, nullptr,
      napi_enumerable, nullptr},
+    {"setSecurityLevel", nullptr, SetSecurityLevel, nullptr, nullptr, nullptr,
+     napi_enumerable, nullptr},
+    {"getSecurityLevel", nullptr, GetSecurityLevel, nullptr, nullptr, nullptr,
+     napi_enumerable, nullptr},
+    {"installSecureSigalgCallback", nullptr, InstallSecureSigalgCallback,
+     nullptr, nullptr, nullptr, napi_enumerable, nullptr},
   };
   napi_define_properties(env, exports,
                          sizeof(methods) / sizeof(methods[0]), methods);

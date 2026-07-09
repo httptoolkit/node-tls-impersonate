@@ -104,6 +104,7 @@ describe('Baseline impersonation', () => {
         expect(extSet.has(17613), 'application_settings (17613)').to.be.true;
     });
 
+    // SCSV is only emitted at OpenSSL security level 0, i.e. in 'insecure' mode.
     it('SCSV (0x00ff) in spec appears in ClientHello but TLS 1.0/1.1 are blocked', async () => {
         const spec: ClientHelloSpec = {
             cipherSuites: [
@@ -121,7 +122,7 @@ describe('Baseline impersonation', () => {
             alpnProtocols: ['h2', 'http/1.1'],
         };
 
-        const { secureContext, connectOptions } = impersonate(spec);
+        const { secureContext, connectOptions } = impersonate(spec, { security: 'insecure' });
         const hello = await captureClientHello({
             secureContext,
             ...connectOptions,
