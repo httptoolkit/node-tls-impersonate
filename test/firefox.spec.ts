@@ -54,8 +54,8 @@ const FIREFOX_EXPECTED_JA4 = 't13d1718h2_5b57614c22b0_1ae7ba31360c';
 
 describe('Firefox TLS fingerprint impersonation', () => {
     it('should match Firefox cipher suites exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(firefoxSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ciphers).to.deep.equal([
             0x1301, 0x1303, 0x1302,
@@ -66,8 +66,8 @@ describe('Firefox TLS fingerprint impersonation', () => {
     });
 
     it('should match Firefox signature algorithms exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(firefoxSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.signatureAlgorithms).to.deep.equal([
             0x0403, 0x0503, 0x0603,
@@ -78,8 +78,8 @@ describe('Firefox TLS fingerprint impersonation', () => {
     });
 
     it('should match Firefox supported groups exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(firefoxSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018, 0x0019, 0x0100, 0x0101]);
     });
@@ -87,8 +87,8 @@ describe('Firefox TLS fingerprint impersonation', () => {
     // Requires Node's bundled OpenSSL to be built with certificate compression
     // enabled (ext 27). First available in Node 26.4.0; earlier builds omit it.
     it('should match Firefox extensions exactly', expectedFailure('<26.4.0', async () => {
-        const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(firefoxSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(new Set(hello.extensions)).to.deep.equal(new Set(FIREFOX_EXPECTED_EXTENSIONS));
         expect(hello.extensions).to.have.length(FIREFOX_EXPECTED_EXTENSIONS.length);
@@ -99,8 +99,8 @@ describe('Firefox TLS fingerprint impersonation', () => {
 
     // Requires OpenSSL EC point format fix (OpenSSL PR 26990)
     it('should send only uncompressed EC point format', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(firefoxSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ecPointFormats).to.deep.equal([0]);
     }, () => {
@@ -111,8 +111,8 @@ describe('Firefox TLS fingerprint impersonation', () => {
     // Depends on the correct extension set (certificate compression, Node 26.4.0+).
     // Unlike JA3, JA4 does not hash EC point formats, so it passes without OpenSSL PR 26990.
     it('should match Firefox JA4 fingerprint', expectedFailure('<26.4.0', async () => {
-        const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(firefoxSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja4).to.equal(FIREFOX_EXPECTED_JA4);
     }, () => {
@@ -121,8 +121,8 @@ describe('Firefox TLS fingerprint impersonation', () => {
     }));
 
     it('should match Firefox JA3 fingerprint', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(firefoxSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja3).to.equal(FIREFOX_EXPECTED_JA3);
     }, () => {

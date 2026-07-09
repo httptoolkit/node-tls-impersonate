@@ -68,8 +68,8 @@ function attemptHandshake(
 
 // Whether an impersonated context accepts the server cert.
 function connectsTo(serverCert: { key: string; cert: string }, options?: ImpersonateOptions): Promise<boolean> {
-    const { secureContext, connectOptions } = impersonate(sha1Spec, { ca: serverCert.cert, ...options });
-    return attemptHandshake(serverCert, { secureContext, ...connectOptions });
+    const { tlsOptions } = impersonate(sha1Spec, { ca: serverCert.cert, ...options });
+    return attemptHandshake(serverCert, tlsOptions);
 }
 
 // Whether a plain Node client (no impersonation) accepts the server cert, at
@@ -88,14 +88,14 @@ describe('impersonate() security mode', () => {
     });
 
     it("advertises SHA-1 sigalgs in 'secure' mode (the default)", async () => {
-        const { secureContext, connectOptions } = impersonate(sha1Spec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(sha1Spec);
+        const hello = await captureClientHello(tlsOptions);
         expect(hello.signatureAlgorithms).to.include.members(SHA1_SIGALGS);
     });
 
     it("advertises SHA-1 sigalgs in 'insecure' mode too", async () => {
-        const { secureContext, connectOptions } = impersonate(sha1Spec, { security: 'insecure' });
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(sha1Spec, { security: 'insecure' });
+        const hello = await captureClientHello(tlsOptions);
         expect(hello.signatureAlgorithms).to.include.members(SHA1_SIGALGS);
     });
 
@@ -105,13 +105,13 @@ describe('impersonate() security mode', () => {
     });
 
     it("'secure' mode leaves the security level at the build default (no downgrade)", () => {
-        const { secureContext } = impersonate(sha1Spec);
-        expect(getSecurityLevel(secureContext)).to.be.greaterThan(0);
+        const { tlsOptions } = impersonate(sha1Spec);
+        expect(getSecurityLevel(tlsOptions.secureContext)).to.be.greaterThan(0);
     });
 
     it("'insecure' mode drops to security level 0", () => {
-        const { secureContext } = impersonate(sha1Spec, { security: 'insecure' });
-        expect(getSecurityLevel(secureContext)).to.equal(0);
+        const { tlsOptions } = impersonate(sha1Spec, { security: 'insecure' });
+        expect(getSecurityLevel(tlsOptions.secureContext)).to.equal(0);
     });
 
     it("'secure' mode accepts a strong server cert", async () => {

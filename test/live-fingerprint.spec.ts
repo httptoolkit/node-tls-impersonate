@@ -177,8 +177,8 @@ describe('Live fingerprint verification', function () {
     // --- Local fingerprint tests (full JA4 + JA3 verification) ---
 
     it('Chrome spec should produce the correct JA4 and JA3 locally', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(chromeSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(chromeSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja4).to.equal(CHROME_EXPECTED_JA4);
         expect(hello.ja3).to.equal(CHROME_EXPECTED_JA3);
@@ -188,8 +188,8 @@ describe('Live fingerprint verification', function () {
     }));
 
     it('Firefox spec should produce the correct JA4 and JA3 locally', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(firefoxSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(firefoxSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja4).to.equal(FIREFOX_EXPECTED_JA4);
         expect(hello.ja3).to.equal(FIREFOX_EXPECTED_JA3);
@@ -199,8 +199,8 @@ describe('Live fingerprint verification', function () {
     }));
 
     it('Safari spec should produce the correct JA4 and JA3 locally', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(safariSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(safariSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja4).to.equal(SAFARI_EXPECTED_JA4);
         expect(hello.ja3).to.equal(SAFARI_EXPECTED_JA3);
@@ -216,8 +216,8 @@ describe('Live fingerprint verification', function () {
     it('Chrome spec should produce the correct JA4 and JA3 on a live server', expectedFailure('*', async function () {
         let fp: FingerprintResponse;
         try {
-            const { secureContext, connectOptions } = impersonate(chromeSpec);
-            fp = await fetchFingerprint({ secureContext, ...connectOptions });
+            const { tlsOptions } = impersonate(chromeSpec);
+            fp = await fetchFingerprint(tlsOptions);
         } catch {
             this.skip(); // Network unavailable
             return;
@@ -232,8 +232,8 @@ describe('Live fingerprint verification', function () {
     it('Firefox spec should produce the correct JA4 and JA3 on a live server', expectedFailure('*', async function () {
         let fp: FingerprintResponse;
         try {
-            const { secureContext, connectOptions } = impersonate(firefoxSpec);
-            fp = await fetchFingerprint({ secureContext, ...connectOptions });
+            const { tlsOptions } = impersonate(firefoxSpec);
+            fp = await fetchFingerprint(tlsOptions);
         } catch {
             this.skip(); // Network unavailable
             return;
@@ -248,8 +248,8 @@ describe('Live fingerprint verification', function () {
     it('Safari spec should produce the correct JA4 and JA3 on a live server', expectedFailure('*', async function () {
         let fp: FingerprintResponse;
         try {
-            const { secureContext, connectOptions } = impersonate(safariSpec);
-            fp = await fetchFingerprint({ secureContext, ...connectOptions });
+            const { tlsOptions } = impersonate(safariSpec);
+            fp = await fetchFingerprint(tlsOptions);
         } catch {
             this.skip(); // Network unavailable
             return;
@@ -291,10 +291,9 @@ describe('Live fingerprint verification', function () {
 
         let impFp: FingerprintResponse;
         try {
-            const { secureContext, connectOptions } = impersonate(spec);
+            const { tlsOptions } = impersonate(spec);
             impFp = await fetchFingerprint({
-                secureContext,
-                ...connectOptions,
+                ...tlsOptions,
             });
         } catch {
             this.skip();
@@ -323,13 +322,12 @@ describe('Live fingerprint verification', function () {
             alpnProtocols: ['h2', 'http/1.1'],
         };
 
-        const { secureContext, connectOptions } = impersonate(scsvSpec);
+        const { tlsOptions } = impersonate(scsvSpec);
 
         let result: { protocol: string | null };
         try {
             result = await connectTls('testserver.host', {
-                secureContext,
-                ...connectOptions,
+                ...tlsOptions,
             });
         } catch {
             this.skip(); // Network unavailable
@@ -355,12 +353,11 @@ describe('Live fingerprint verification', function () {
             signatureAlgorithms: [0x0403, 0x0804, 0x0401],
         };
 
-        const { secureContext, connectOptions } = impersonate(scsvSpec);
+        const { tlsOptions } = impersonate(scsvSpec);
 
         try {
             await connectTls('tls-v1-0.testserver.host', {
-                secureContext,
-                ...connectOptions,
+                ...tlsOptions,
             });
             expect.fail('Should not connect to TLS 1.0-only server');
         } catch (e: unknown) {

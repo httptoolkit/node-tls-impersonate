@@ -67,8 +67,8 @@ const SAFARI_EXPECTED_JA4 = 't13d2014h2_a09f3c656075_604f15001eed';
 describe('Safari TLS fingerprint impersonation', () => {
     // OpenSSL 3.5+ no longer ships 3DES, so those ciphers are dropped and reported.
     it('should match Safari cipher suites exactly (including 3DES)', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(safariSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(safariSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ciphers).to.deep.equal([
             0x1302, 0x1303, 0x1301,
@@ -86,8 +86,8 @@ describe('Safari TLS fingerprint impersonation', () => {
     }));
 
     it('should match Safari signature algorithms exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(safariSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(safariSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.signatureAlgorithms).to.deep.equal([
             0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201,
@@ -95,8 +95,8 @@ describe('Safari TLS fingerprint impersonation', () => {
     });
 
     it('should match Safari supported groups exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(safariSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(safariSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018, 0x0019]);
     });
@@ -105,8 +105,8 @@ describe('Safari TLS fingerprint impersonation', () => {
     // a 256-511 byte hello, and Safari's post-quantum key share makes this one
     // larger, so it isn't added. Padding is always reported as unsupported.
     it('should match Safari extensions exactly', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(safariSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(safariSpec);
+        const hello = await captureClientHello(tlsOptions);
         const extSet = new Set(hello.extensions);
 
         expect(extSet).to.deep.equal(new Set(SAFARI_EXPECTED_EXTENSIONS));
@@ -118,8 +118,8 @@ describe('Safari TLS fingerprint impersonation', () => {
     }));
 
     it('should send only uncompressed EC point format', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(safariSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(safariSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ecPointFormats).to.deep.equal([0]);
     }, () => {
@@ -129,8 +129,8 @@ describe('Safari TLS fingerprint impersonation', () => {
 
     // JA4 hashes the cipher list, so 3DES being dropped is the gap.
     it('should match Safari JA4 fingerprint', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(safariSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(safariSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja4).to.equal(SAFARI_EXPECTED_JA4);
     }, () => {
@@ -141,8 +141,8 @@ describe('Safari TLS fingerprint impersonation', () => {
     // JA3 hashes ciphers, extensions and EC point formats - so 3DES, padding and
     // ec_point_formats all contribute; all three must be reported.
     it('should match Safari JA3 fingerprint', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(safariSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(safariSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja3).to.equal(SAFARI_EXPECTED_JA3);
     }, () => {

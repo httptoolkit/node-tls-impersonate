@@ -45,8 +45,8 @@ const OKHTTP_EXPECTED_JA4 = 't13d1511h2_8daaf6152771_86dd91ae2a36';
 
 describe('OkHttp/Android TLS fingerprint impersonation', () => {
     it('should match OkHttp cipher suites exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(okhttpSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(okhttpSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ciphers).to.deep.equal([
             0x1301, 0x1302, 0x1303,
@@ -58,8 +58,8 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
     });
 
     it('should match OkHttp signature algorithms exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(okhttpSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(okhttpSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.signatureAlgorithms).to.deep.equal([
             0x0403, 0x0804, 0x0401,
@@ -70,15 +70,15 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
     });
 
     it('should match OkHttp supported groups exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(okhttpSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(okhttpSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.groups).to.deep.equal([0x001d, 0x0017, 0x0018]);
     });
 
     it('should match OkHttp extensions exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(okhttpSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(okhttpSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(new Set(hello.extensions)).to.deep.equal(new Set(
             [0, 23, 65281, 10, 11, 5, 16, 13, 51, 45, 43]
@@ -88,8 +88,8 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
 
     // Requires OpenSSL EC point format fix (OpenSSL PR 26990)
     it('should send only uncompressed EC point format', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(okhttpSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(okhttpSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ecPointFormats).to.deep.equal([0]);
     }, () => {
@@ -98,16 +98,16 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
     }));
 
     it('should match OkHttp JA4 fingerprint', async () => {
-        const { secureContext, connectOptions } = impersonate(okhttpSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(okhttpSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja4).to.equal(OKHTTP_EXPECTED_JA4);
     });
 
     // JA3 includes EC point formats, so depends on OpenSSL PR 26990
     it('should match OkHttp JA3 fingerprint', expectedFailure('*', async () => {
-        const { secureContext, connectOptions } = impersonate(okhttpSpec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(okhttpSpec);
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja3).to.equal(OKHTTP_EXPECTED_JA3);
     }, () => {

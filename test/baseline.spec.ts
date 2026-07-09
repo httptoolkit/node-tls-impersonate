@@ -19,12 +19,11 @@ describe('Baseline impersonation', () => {
             alpnProtocols: ['h2', 'http/1.1'],
         };
 
-        const { secureContext, connectOptions } = impersonate(spec);
+        const { tlsOptions } = impersonate(spec);
 
         // Capture the impersonated ClientHello
         const impersonatedHello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
+            ...tlsOptions,
         });
 
         // All fields should match exactly, preserving order
@@ -63,11 +62,10 @@ describe('Baseline impersonation', () => {
         };
 
         // Should not throw — @SECLEVEL=0 is auto-applied
-        const { secureContext, connectOptions } = impersonate(spec);
+        const { tlsOptions } = impersonate(spec);
 
         const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
+            ...tlsOptions,
         });
 
         // SHA-1 sigalgs should be present
@@ -91,10 +89,9 @@ describe('Baseline impersonation', () => {
             alpnProtocols: ['h2', 'http/1.1'],
         };
 
-        const { secureContext, connectOptions } = impersonate(spec);
+        const { tlsOptions } = impersonate(spec);
         const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
+            ...tlsOptions,
         });
 
         const extSet = new Set(hello.extensions);
@@ -122,10 +119,9 @@ describe('Baseline impersonation', () => {
             alpnProtocols: ['h2', 'http/1.1'],
         };
 
-        const { secureContext, connectOptions } = impersonate(spec, { security: 'insecure' });
+        const { tlsOptions } = impersonate(spec, { security: 'insecure' });
         const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
+            ...tlsOptions,
         });
 
         // SCSV should appear in the captured cipher list
@@ -152,10 +148,9 @@ describe('Baseline impersonation', () => {
             alpnProtocols: ['h2', 'http/1.1'],
         };
 
-        const { secureContext, connectOptions } = impersonate(spec);
+        const { tlsOptions } = impersonate(spec);
         const hello = await captureClientHello({
-            secureContext,
-            ...connectOptions,
+            ...tlsOptions,
         });
 
         // The raw extension list includes the GREASE extensions we asked for...
@@ -181,7 +176,7 @@ describe('Baseline impersonation', () => {
         };
 
         // Does not throw; reports each unreproducible codepoint.
-        const { secureContext, connectOptions, unsupported } = impersonate(spec);
+        const { tlsOptions, unsupported } = impersonate(spec);
         expect(unsupported.find(u => u.id === 0xdead)).to.deep.equal(
             { kind: 'cipherSuite', id: 0xdead, reason: 'not a known cipher suite' });
         expect(unsupported.find(u => u.id === 0xbeef)).to.deep.equal(
@@ -191,7 +186,7 @@ describe('Baseline impersonation', () => {
 
         // Still produces the closest fingerprint: known codepoints emitted,
         // unreproducible ones simply absent.
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const hello = await captureClientHello(tlsOptions);
         expect(hello.ciphers).to.include(0x1301).and.to.include(0xc02b);
         expect(hello.ciphers).to.not.include(0xdead);
         expect(hello.groups).to.include(0x001d).and.to.not.include(0xbeef);

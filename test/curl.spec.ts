@@ -56,8 +56,8 @@ const CURL_EXPECTED_JA4 = 't13d3112h2_e8f1e7e78f70_b26ce05bbdd6';
 // security level 0, so full-fidelity reproduction requires 'insecure' mode.
 describe('Curl TLS fingerprint impersonation', () => {
     it('should match curl cipher suites exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(curlSpec, { security: 'insecure' });
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(curlSpec, { security: 'insecure' });
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ciphers).to.deep.equal([
             0x1302, 0x1303, 0x1301,
@@ -71,8 +71,8 @@ describe('Curl TLS fingerprint impersonation', () => {
     });
 
     it('should match curl signature algorithms exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(curlSpec, { security: 'insecure' });
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(curlSpec, { security: 'insecure' });
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.signatureAlgorithms).to.deep.equal([
             0x0403, 0x0503, 0x0603, 0x0807, 0x0808,
@@ -85,8 +85,8 @@ describe('Curl TLS fingerprint impersonation', () => {
     });
 
     it('should match curl supported groups exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(curlSpec, { security: 'insecure' });
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(curlSpec, { security: 'insecure' });
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.groups).to.deep.equal([
             0x001d, 0x0017, 0x001e, 0x0019, 0x0018,
@@ -95,8 +95,8 @@ describe('Curl TLS fingerprint impersonation', () => {
     });
 
     it('should match curl extensions exactly', async () => {
-        const { secureContext, connectOptions } = impersonate(curlSpec, { security: 'insecure' });
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(curlSpec, { security: 'insecure' });
+        const hello = await captureClientHello(tlsOptions);
 
         expect(new Set(hello.extensions)).to.deep.equal(new Set(
             [0, 11, 10, 16, 22, 23, 49, 13, 43, 45, 51, 21]
@@ -105,8 +105,8 @@ describe('Curl TLS fingerprint impersonation', () => {
     });
 
     it('should match curl JA4 fingerprint', async () => {
-        const { secureContext, connectOptions } = impersonate(curlSpec, { security: 'insecure' });
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(curlSpec, { security: 'insecure' });
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja4).to.equal(CURL_EXPECTED_JA4);
     });
@@ -115,8 +115,8 @@ describe('Curl TLS fingerprint impersonation', () => {
     // today (unlike the [0]-only clients). If OpenSSL 3.6 switches to [0] this
     // will start failing - the intended alert to add ec_point handling for curl.
     it('should match curl JA3 fingerprint', async () => {
-        const { secureContext, connectOptions } = impersonate(curlSpec, { security: 'insecure' });
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(curlSpec, { security: 'insecure' });
+        const hello = await captureClientHello(tlsOptions);
 
         expect(hello.ja3).to.equal(CURL_EXPECTED_JA3);
     });

@@ -170,7 +170,7 @@ export interface ClientHelloSpec {
     ecPointFormats?: number[];
 
     /** ALPN protocol names (e.g. ['h2', 'http/1.1']).
-     *  Extracted from the spec into connectOptions. */
+     *  Extracted from the spec into the result's tlsOptions. */
     alpnProtocols?: string[];
 }
 
@@ -185,8 +185,8 @@ export interface UnsupportedFeature {
 }
 
 export interface ImpersonateResult {
-    secureContext: tls.SecureContext;
-    connectOptions: {
+    tlsOptions: {
+        secureContext: tls.SecureContext;
         ALPNProtocols?: string[];
         requestOCSP?: boolean;
     };
@@ -476,7 +476,7 @@ export function impersonate(
 
     // Scan extensions for config-driven features
     const extTypes = new Set(spec.extensions.map(e => e.type));
-    const connectOpts: ImpersonateResult['connectOptions'] = {};
+    const connectOpts: Omit<ImpersonateResult['tlsOptions'], 'secureContext'> = {};
 
     if (extTypes.has(EXT_STATUS_REQUEST)) {
         connectOpts.requestOCSP = true;
@@ -656,5 +656,5 @@ export function impersonate(
         }
     }
 
-    return { secureContext: ctx, connectOptions: connectOpts, unsupported };
+    return { tlsOptions: { secureContext: ctx, ...connectOpts }, unsupported };
 }

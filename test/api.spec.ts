@@ -27,8 +27,8 @@ describe('isSupported()', () => {
     it('agrees with impersonate() actually working', async () => {
         // If supported, impersonate() must not throw the runtime error.
         expect(isSupported()).to.equal(true);
-        const { secureContext, connectOptions } = impersonate(spec);
-        const hello = await captureClientHello({ secureContext, ...connectOptions });
+        const { tlsOptions } = impersonate(spec);
+        const hello = await captureClientHello(tlsOptions);
         expect(hello.ciphers).to.include(0x1301);
     });
 });
@@ -37,15 +37,13 @@ describe('impersonateFromClientHello()', () => {
     it('reproduces a captured hello fed straight back in (round-trip)', async () => {
         const first = impersonate(spec);
         const hello1 = await captureClientHello({
-            secureContext: first.secureContext,
-            ...first.connectOptions,
+            ...first.tlsOptions,
         });
 
         // Feed read-tls-client-hello's parsed message directly - no manual spec.
         const second = impersonateFromClientHello(hello1.raw);
         const hello2 = await captureClientHello({
-            secureContext: second.secureContext,
-            ...second.connectOptions,
+            ...second.tlsOptions,
         });
 
         expect(hello2.ciphers).to.deep.equal(hello1.ciphers);
