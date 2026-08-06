@@ -86,7 +86,7 @@ describe('Chrome TLS fingerprint impersonation', () => {
 
     // Requires Node's bundled OpenSSL to be built with certificate compression
     // enabled (ext 27). First available in Node 26.4.0; earlier builds omit it.
-    it('should match Chrome extensions exactly', expectedFailure('<26.4.0', async () => {
+    it('should match Chrome extensions exactly', expectedFailure('<24.19.0, <26.4.0', async () => {
         const { tlsOptions } = impersonate(chromeSpec);
         const hello = await captureClientHello(tlsOptions);
 
@@ -110,7 +110,7 @@ describe('Chrome TLS fingerprint impersonation', () => {
 
     // Depends on the correct extension set (certificate compression, Node 26.4.0+).
     // Unlike JA3, JA4 does not hash EC point formats, so it passes without OpenSSL PR 26990.
-    it('should match Chrome JA4 fingerprint', expectedFailure('<26.4.0', async () => {
+    it('should match Chrome JA4 fingerprint', expectedFailure('<24.19.0, <26.4.0', async () => {
         const { tlsOptions } = impersonate(chromeSpec);
         const hello = await captureClientHello(tlsOptions);
 
