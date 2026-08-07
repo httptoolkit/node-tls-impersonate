@@ -15,7 +15,8 @@ jobs:
       fail-fast: false
       matrix:
         node-version:
-          - 24      # Minimum supported: 24.15+ exports node::crypto::GetSSLCtx
+          - 24.15   # Minimum supported: 24.15+ exports node::crypto::GetSSLCtx
+          - 24.19   # Node v24 with cert compression (matches HTK server)
           - latest  # Full fidelity (cert compression) from 26.4
 
     steps:
