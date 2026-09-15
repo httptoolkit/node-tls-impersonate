@@ -166,6 +166,17 @@ export interface ClientHelloSpec {
     /** Signature algorithm IDs in wire order */
     signatureAlgorithms: number[];
 
+    /** The versions from the supported_versions extension (43), in wire order,
+     *  including GREASE. Omit for a hello with no supported_versions extension:
+     *  such a client is pre-TLS1.3, so the context is capped by legacyVersion. */
+    supportedVersions?: number[];
+
+    /** The ClientHello's legacy client_version field (e.g. 0x0303 for TLS 1.2).
+     *  Used as the version ceiling when there is no supported_versions extension,
+     *  which is the only way a pre-TLS1.3 client states what it can speak.
+     *  Defaults to TLS 1.2. */
+    legacyVersion?: number;
+
     /** EC point formats. Defaults to [0] (uncompressed) if omitted.
      *  Note: OpenSSL controls EC point format encoding; this field is best-effort. */
     ecPointFormats?: number[];
@@ -179,8 +190,8 @@ export interface ClientHelloSpec {
  *  closest achievable fingerprint is still produced; this just records the gap
  *  so callers can log or monitor it. */
 export interface UnsupportedFeature {
-    kind: 'cipherSuite' | 'supportedGroup' | 'signatureAlgorithm' | 'extension';
-    /** The codepoint from the spec (cipher/group/sigalg id, or extension type). */
+    kind: 'cipherSuite' | 'supportedGroup' | 'signatureAlgorithm' | 'extension' | 'version';
+    /** The codepoint from the spec as it appears on the wire */
     id: number;
     reason: string;
 }
@@ -195,6 +206,31 @@ export interface ImpersonateResult {
      *  was reproduced fully. impersonate() never throws for these - it produces
      *  the closest fingerprint it can and records the gaps here. */
     unsupported: UnsupportedFeature[];
+}
+
+function dedupeFeatures(features: UnsupportedFeature[]): UnsupportedFeature[] {
+    const seen = new Set<string>();
+    return features.filter(({ kind, id }) => {
+        const key = `${kind}:${id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+/**
+ * Thrown when a spec cannot be mirrored at all under the given options, as opposed to
+ * being reproduced with gaps.
+ */
+export class CannotImpersonateError extends Error {
+    readonly code = 'ERR_CANNOT_IMPERSONATE';
+    readonly unsupported: UnsupportedFeature[];
+
+    constructor(reason: string, unsupported: UnsupportedFeature[]) {
+        super(`Cannot impersonate this ClientHello: ${reason}`);
+        this.name = 'CannotImpersonateError';
+        this.unsupported = unsupported;
+    }
 }
 
 export interface ImpersonateOptions extends tls.SecureContextOptions {
@@ -326,6 +362,30 @@ const EXT_ENCRYPT_THEN_MAC = 22;
 const EXT_COMPRESS_CERTIFICATE = 27;
 const EXT_SESSION_TICKET = 35;
 const EXT_POST_HANDSHAKE_AUTH = 49;
+const EXT_SUPPORTED_VERSIONS = 43;
+const EXT_SIGNATURE_ALGORITHMS = 13;
+
+/** TLS version wire codepoints, as they appear in supported_versions & client_version */
+const TLS1_0 = 0x0301;
+const TLS1_1 = 0x0302;
+const TLS1_2 = 0x0303;
+const TLS1_3 = 0x0304;
+
+const VERSION_NAMES: Record<number, tls.SecureVersion> = {
+    [TLS1_0]: 'TLSv1',
+    [TLS1_1]: 'TLSv1.1',
+    [TLS1_2]: 'TLSv1.2',
+    [TLS1_3]: 'TLSv1.3',
+};
+
+/**
+ * Min version allowed by the security mode. Mirroring the fingerprint must never
+ * drop below the minimum secure version (n.b. even insecure rejects SSL v3).
+ */
+const MIN_NEGOTIABLE_VERSION: Record<'secure' | 'insecure', number> = {
+    secure: TLS1_2,
+    insecure: TLS1_0,
+};
 
 // Not exposed in Node's crypto.constants
 const SSL_OP_TLSEXT_PADDING = 1 << 4;
@@ -370,6 +430,8 @@ export function isSupported(): boolean {
 export interface ParsedClientHello {
     cipherSuites: number[];
     extensions: Array<{ id: number; data: Record<string, unknown> | null }>;
+    /** The legacy client_version field of the hello. */
+    version?: number;
 }
 
 // Extract and cast extension data to the relevant type
@@ -393,9 +455,50 @@ function clientHelloToSpec(hello: ParsedClientHello): ClientHelloSpec {
         extensions: hello.extensions.map((ext) => ({ type: ext.id })),
         supportedGroups: extensionField<number[]>(hello, 10, 'groups') ?? [],
         signatureAlgorithms: extensionField<number[]>(hello, 13, 'algorithms') ?? [],
+        supportedVersions: extensionField<number[]>(hello, EXT_SUPPORTED_VERSIONS, 'versions'),
+        legacyVersion: hello.version,
         ecPointFormats: extensionField<number[]>(hello, 11, 'formats'),
         alpnProtocols: extensionField<string[]>(hello, 16, 'protocols'),
     };
+}
+
+/**
+ * The version range to offer: what the hello asks for, narrowed to what this security mode
+ * will negotiate and to what the hello's own cipher suites actually support. Null if nothing
+ * is left, i.e. there's no version where this hello could usefully mirrored & functional.
+ */
+function resolveVersionRange(
+    spec: ClientHelloSpec,
+    security: 'secure' | 'insecure',
+    hasTls13Ciphers: boolean,
+    hasTls12Ciphers: boolean
+): { min: number, max: number, narrowed: boolean } | null {
+    const listed = (spec.supportedVersions ?? []).filter((v) => !isGreaseValue(v));
+
+    // Without supported_versions this is a pre-TLS1.3 client: legacy client_version is its
+    // ceiling, and it states no floor at all.
+    const wantedMax = listed.length ? Math.max(...listed)
+        : spec.legacyVersion !== undefined ? Math.min(spec.legacyVersion, TLS1_2)
+        : TLS1_3;
+    const wantedMin = listed.length ? Math.min(...listed) : TLS1_0;
+
+    // TLS 1.3 needs TLS 1.3 suites and everything below needs TLS 1.2 suites: with an empty
+    // list at either end OpenSSL substitutes its own defaults, advertising suites the
+    // mirrored client never offered.
+    const max = Math.min(wantedMax, hasTls13Ciphers ? TLS1_3 : TLS1_2);
+    const min = Math.max(
+        wantedMin,
+        hasTls12Ciphers ? TLS1_0 : TLS1_3,
+        MIN_NEGOTIABLE_VERSION[security]
+    );
+
+    if (min > max) return null;
+
+    // Return whether we're accurately mirroring the versions, or if we've narrowed them.
+    // A pre-TLS1.3 hello doesn't send the supported_versions ext, so nobody knows what
+    // the minimum version is there, and it can't be narrowed.
+    const narrowed = max !== wantedMax || (!!listed.length && min !== wantedMin);
+    return { min, max, narrowed };
 }
 
 /**
@@ -488,24 +591,92 @@ export function impersonate(
 
     // OpenSSL only emits SCSV (0x00ff/0x5600) when at security level 0 with
     // minVersion <= TLSv1, i.e. only in 'insecure' mode. When we can emit it we
-    // lower minVersion to trigger inclusion, then block TLSv1.0/1.1 negotiation
-    // via SSL_OP flags so the floor stays at TLS 1.2. In 'secure' mode SCSV can't
-    // be emitted, so minVersion stays at TLS 1.2 and the gap is reported below.
+    // lower minVersion to trigger inclusion, then block negotiation below the
+    // resolved floor via SSL_OP flags. In 'secure' mode SCSV can't be emitted, so
+    // minVersion is left alone and the gap is reported below.
     const emitScsv = security === 'insecure' && scsvId !== undefined;
 
-    const ctx = tls.createSecureContext({
-        ...secureContextOptions,
-        ciphers: cipherString,
-        sigalgs: sigalgs.join(':'),
-        ecdhCurve: groups.join(':'),
-        minVersion: emitScsv ? 'TLSv1' as tls.SecureVersion : 'TLSv1.2',
-        maxVersion: 'TLSv1.3',
-    });
+    const buildContext = (range: { min: number, max: number }, tls12CipherString: string) =>
+        tls.createSecureContext({
+            ...secureContextOptions,
+            ciphers: tls12CipherString,
+            // Empty sigalgs means a pre-TLS1.2 hello. Node rejects an empty string here, so we
+            // skip the option, and OpenSSL then uses defaults for TLS 1.2+ (reported below)
+            ...(sigalgs.length ? { sigalgs: sigalgs.join(':') } : {}),
+            ecdhCurve: groups.join(':'),
+            minVersion: VERSION_NAMES[emitScsv ? TLS1_0 : range.min],
+            maxVersion: VERSION_NAMES[range.max],
+        });
+
+    const resolveVersions = (hasTls12Ciphers: boolean) => {
+        const range = resolveVersionRange(
+            spec, security, tls13Ciphers.length > 0, hasTls12Ciphers
+        );
+        if (!range) {
+            throw new CannotImpersonateError(
+                `no available TLS version range can functionally mirror this client hello`,
+                unsupported
+            );
+        }
+        return range;
+    };
+
+    let versions = resolveVersions(tls12Ciphers.length > 0);
+
+    let ctx: tls.SecureContext;
+    try {
+        ctx = buildContext(versions, cipherString);
+    } catch (e) {
+        // This should only happen if none of the TLS 1.2 suites we ask for are available.
+        if ((e as { code?: string }).code !== 'ERR_SSL_NO_CIPHER_MATCH') throw e;
+
+        for (const id of requestedCipherIds) {
+            if (id >= 0x1300 && id <= 0x13ff) continue;
+            unsupported.push({
+                kind: 'cipherSuite', id, reason: 'not available in this OpenSSL build',
+            });
+        }
+
+        // Try again:
+        versions = resolveVersions(false);
+        ctx = buildContext(versions, '');
+    }
+
+    if (versions.narrowed) {
+        unsupported.push({
+            kind: 'version',
+            id: versions.max,
+            reason: `only ${VERSION_NAMES[versions.min]} to ${VERSION_NAMES[versions.max]}` +
+                ' can be offered for this hello',
+        });
+    }
+
+    const offersTls13 = versions.max >= TLS1_3;
+
+    if (extTypes.has(EXT_SUPPORTED_VERSIONS) && !offersTls13) {
+        unsupported.push({
+            kind: 'extension',
+            id: EXT_SUPPORTED_VERSIONS,
+            reason: 'supported_versions is only emitted by OpenSSL when TLS 1.3 is offered',
+        });
+    }
+
+    if (!sigalgs.length && versions.max >= TLS1_2) {
+        unsupported.push({
+            kind: 'extension',
+            id: EXT_SIGNATURE_ALGORITHMS,
+            reason: extTypes.has(EXT_SIGNATURE_ALGORITHMS)
+                ? 'no requested signature algorithm could be reproduced, so OpenSSL ' +
+                    'advertises its own defaults when TLS 1.2+ is offered'
+                : 'signature_algorithms is always emitted by OpenSSL when TLS 1.2+ is offered',
+        });
+    }
 
     if (emitScsv) {
         setOptions(ctx,
-            crypto.constants.SSL_OP_NO_TLSv1 |
-            crypto.constants.SSL_OP_NO_TLSv1_1
+            (versions.min > TLS1_0 ? crypto.constants.SSL_OP_NO_TLSv1 : 0) |
+            (versions.min > TLS1_1 ? crypto.constants.SSL_OP_NO_TLSv1_1 : 0) |
+            (versions.min > TLS1_2 ? crypto.constants.SSL_OP_NO_TLSv1_2 : 0)
         );
     }
 
@@ -521,9 +692,20 @@ export function impersonate(
 
     // We build TLS 1.2 and 1.3 cipher strings separately to preserve order,
     // but Node's ciphers option combines them (splitting on TLS_ prefix).
-    // Set the TLS 1.3 ciphersuite order independently via the native addon.
-    if (ciphersuitesString) {
-        setCiphersuites(ctx, ciphersuitesString);
+    // Set the TLS 1.3 ciphersuite order independently via the native addon, even
+    // if empty (otherwise OpenSSL falls back to defaults).
+    setCiphersuites(ctx, ciphersuitesString);
+
+    // If we don't do TLS 1.3, any of its ciphers in the spec are dropped - report this:
+    const droppedTls13Ciphers = new Set(
+        offersTls13 ? [] : requestedCipherIds.filter(id => id >= 0x1300 && id <= 0x13ff)
+    );
+    for (const id of droppedTls13Ciphers) {
+        unsupported.push({
+            kind: 'cipherSuite',
+            id,
+            reason: 'TLS 1.3 cipher suites are not offered when TLS 1.3 is not negotiable',
+        });
     }
 
     // Ciphers requested but not compiled into this OpenSSL (e.g. 3DES on
@@ -657,5 +839,8 @@ export function impersonate(
         }
     }
 
-    return { tlsOptions: { secureContext: ctx, ...connectOpts }, unsupported };
+    return {
+        tlsOptions: { secureContext: ctx, ...connectOpts },
+        unsupported: dedupeFeatures(unsupported),
+    };
 }

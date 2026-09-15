@@ -57,6 +57,24 @@ for (const gap of unsupported) {
 }
 ```
 
+Some hellos can't be mirrored at all, and for those `impersonate()` throws a
+`CannotImpersonateError` (`code: 'ERR_CANNOT_IMPERSONATE'`). That happens if mirroring
+with the given configuration would never successfully make a connection. For example,
+using the default `secure` mode (TLS 1.2+) with a very old TLS 1.0 client hello would
+create a configuration that always fails.
+
+```typescript
+import { impersonate, CannotImpersonateError } from 'tls-impersonate';
+
+try {
+    const { tlsOptions } = impersonate(spec);
+    // ...connect with the mirrored fingerprint
+} catch (e) {
+    if (!(e instanceof CannotImpersonateError)) throw e;
+    // e.unsupported explains why. Connect with your own default fingerprint instead.
+}
+```
+
 ### Impersonating a captured ClientHello
 
 If you have a real ClientHello parsed with [read-tls-client-hello](https://github.com/httptoolkit/read-tls-client-hello), you can pass it straight in - no need to build a spec by hand:
@@ -80,7 +98,7 @@ const socket = tls.connect({
 
 By default, tls-impersonate will never reduce the security of TLS connections. It will not change the OpenSSL security level, and although it advertises some legacy features it will reject any connections that attempt to use them.
 
-This works for almost all fingerprints, but not 100% of cases. If this is not sufficient (as reported by the `unsupported` result) you can pass `securiry: 'insecure'` to allow tls-impersonate to enable known-insecure configurations. This should be avoided unless absolutely necessary, and this isn't required to match the fingerprints of most clients (browsers, Android HTTP libraries, etc).
+This works for almost all fingerprints, but not 100% of cases. If this is not sufficient (as reported by the `unsupported` result) you can pass `security: 'insecure'` to allow tls-impersonate to enable known-insecure configurations. This should be avoided unless absolutely necessary, and this isn't required to match the fingerprints of most clients (browsers, Android HTTP libraries, etc).
 
 ### Feature detection
 

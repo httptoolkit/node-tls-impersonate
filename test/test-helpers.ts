@@ -1,10 +1,17 @@
 import * as tls from 'node:tls';
+import * as net from 'node:net';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import { satisfies } from 'semver';
-import { trackClientHellos, getExtensionData } from 'read-tls-client-hello';
+import {
+    trackClientHellos,
+    getExtensionData,
+    readTlsClientHello,
+    calculateJa3,
+    calculateJa4,
+} from 'read-tls-client-hello';
 import { impersonate, type ClientHelloSpec } from '../src/index.js';
 
 /** Fingerprint-oriented view of a captured ClientHello, derived from
@@ -191,6 +198,60 @@ export async function captureClientHello(options?: {
             });
         });
     });
+}
+
+/**
+ * Capture the ClientHello that the given connect options actually emit, by reading the
+ * raw bytes straight off a plain TCP socket.
+ *
+ * Unlike captureClientHello this never attempts a handshake, so it works for any offer -
+ * including TLS 1.0/1.1 hellos, and hellos a modern TLS server would reject outright.
+ */
+export async function captureRawClientHello(
+    connectOptions: tls.ConnectionOptions
+): Promise<CapturedClientHello> {
+    const server = net.createServer();
+    try {
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const { port } = server.address() as { port: number };
+
+        const helloPromise = new Promise<CapturedClientHello>((resolve, reject) => {
+            const timeout = setTimeout(
+                () => reject(new Error('Timeout waiting for ClientHello')),
+                5000
+            );
+            server.on('connection', (socket) => {
+                readTlsClientHello(socket).then(
+                    (hello) => resolve(toCapturedHello({
+                        ...hello,
+                        ja3: calculateJa3(hello),
+                        ja4: calculateJa4(hello),
+                    })),
+                    reject
+                ).finally(() => {
+                    clearTimeout(timeout);
+                    socket.destroy();
+                });
+            });
+        });
+
+        const client = tls.connect({
+            host: '127.0.0.1',
+            port,
+            servername: 'localhost',
+            rejectUnauthorized: false,
+            ...connectOptions,
+        });
+        client.on('error', () => {}); // Nothing answers - we only want the hello it sends
+
+        try {
+            return await helloPromise;
+        } finally {
+            client.destroy();
+        }
+    } finally {
+        server.close();
+    }
 }
 
 /**
