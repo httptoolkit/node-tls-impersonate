@@ -207,11 +207,8 @@ const REAL_WORLD_TARGETS = [
 export function runRealWorldTests(name: string, spec: ClientHelloSpec): void {
     for (const host of REAL_WORLD_TARGETS) {
         it(`${name} spec should complete TLS handshake with ${host}`, async function () {
-            const { secureContext, connectOptions } = impersonate(spec);
-            const result = await verifyRemoteHandshake.call(this, host, {
-                secureContext,
-                ...connectOptions,
-            });
+            const { tlsOptions } = impersonate(spec);
+            const result = await verifyRemoteHandshake.call(this, host, tlsOptions);
             if (!result.protocol) {
                 throw new Error(`No protocol negotiated with ${host}`);
             }
