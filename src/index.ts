@@ -137,6 +137,7 @@ const SIGALG_NAMES: Record<number, string> = {
     0x0905: 'mldsa65',
     0x0906: 'mldsa87',
     0x0201: 'rsa_pkcs1_sha1',
+    0x0202: 'dsa_sha1',
     0x0203: 'ecdsa_sha1',
     0x0301: 'rsa_pkcs1_sha224',
     0x0302: 'dsa_sha224',
