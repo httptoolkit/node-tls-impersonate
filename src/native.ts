@@ -9,9 +9,7 @@ interface NativeBinding {
         nativeCtx: object,
         extType: number,
         ctxFlags: number,
-        data: Buffer | null,
-        add: ((extType: number, context: number) => Buffer | null) | null,
-        parse: ((extType: number, context: number, data: Buffer) => boolean) | null
+        data: Buffer
     ): void;
 
     isPredefinedExtension(extType: number): boolean;
@@ -71,29 +69,10 @@ export function addCustomExtension(
     options: {
         extensionType: number;
         context: number;
-        data?: Buffer;
-        add?: (extType: number, context: number) => Buffer | null;
-        parse?: (extType: number, context: number, data: Buffer) => boolean;
+        data: Buffer;
     }
 ): void {
-    const hasData = options.data !== undefined;
-    const hasAdd = typeof options.add === 'function';
-
-    if (hasData && hasAdd) {
-        throw new TypeError('data and add are mutually exclusive');
-    }
-    if (!hasData && !hasAdd) {
-        throw new TypeError('Either data (Buffer) or add (Function) must be provided');
-    }
-
-    binding.addCustomExtension(
-        ctx,
-        options.extensionType,
-        options.context,
-        hasData ? options.data! : null,
-        hasAdd ? options.add! : null,
-        options.parse || null,
-    );
+    binding.addCustomExtension(ctx, options.extensionType, options.context, options.data);
 }
 
 /**

@@ -72,8 +72,7 @@ function main() {
   const customExt = 0xabcd; // private-use type, not internally handled by OpenSSL
   assert(!binding.isPredefinedExtension(customExt), 'test ext must be custom');
   binding.addCustomExtension(
-    ctx, customExt, binding.constants.SSL_EXT_CLIENT_HELLO,
-    Buffer.from([1, 2, 3]), null, null);
+    ctx, customExt, binding.constants.SSL_EXT_CLIENT_HELLO, Buffer.from([1, 2, 3]));
 
   // 4. Return values and validation behaviour.
   assert.strictEqual(typeof binding.isPredefinedExtension(13), 'boolean');

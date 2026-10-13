@@ -86,11 +86,7 @@ static SSL_CTX* GetSSLCtx(napi_env env, napi_value secure_context) {
 // ─── ExtensionData: per-registration callback state ──────────────────────────
 
 struct ExtensionData {
-  napi_env env;
-  bool is_static;
   std::vector<unsigned char> static_data;
-  napi_ref add_cb;   // nullptr unless dynamic
-  napi_ref parse_cb; // nullptr unless a parse callback was given
 };
 
 // ─── OpenSSL custom extension callbacks ──────────────────────────────────────
@@ -106,101 +102,22 @@ static int CustomExtAddCallback(SSL* s,
                                 void* add_arg) {
   ExtensionData* data = static_cast<ExtensionData*>(add_arg);
 
-  if (data->is_static) {
-    // We're simulating client hello fingerprints - don't send our fixed (CH specific)
-    // custom data in any other scenarios:
-    if ((context & SSL_EXT_CLIENT_HELLO) == 0) return 0;
+  // We're simulating client hello fingerprints - don't send our fixed (CH specific)
+  // custom data in any other scenarios:
+  if ((context & SSL_EXT_CLIENT_HELLO) == 0) return 0;
 
-    if (data->static_data.empty()) {
-      *out = nullptr;
-      *outlen = 0;
-    } else {
-      *out = data->static_data.data();
-      *outlen = data->static_data.size();
-    }
-    return 1;
-  }
-
-  // Dynamic mode: call the JS add callback. Fires synchronously on the JS
-  // thread during the handshake, so the stored napi_env is valid here.
-  napi_env env = data->env;
-  napi_handle_scope scope;
-  if (napi_open_handle_scope(env, &scope) != napi_ok) {
-    *al = SSL_AD_INTERNAL_ERROR;
-    return -1;
-  }
-
-  napi_value cb = nullptr, recv, argv[2], result;
-  if (napi_get_reference_value(env, data->add_cb, &cb) != napi_ok ||
-      cb == nullptr) {
-    napi_close_handle_scope(env, scope);
-    *al = SSL_AD_INTERNAL_ERROR;
-    return -1;
-  }
-  napi_get_undefined(env, &recv);
-  napi_create_double(env, ext_type, &argv[0]);
-  napi_create_double(env, context, &argv[1]);
-
-  // Treat any non-ok status as failure so `result` is never read uninitialized.
-  napi_status status = napi_call_function(env, recv, cb, 2, argv, &result);
-  if (status != napi_ok) {
-    napi_value exc;
-    napi_get_and_clear_last_exception(env, &exc);
-    napi_close_handle_scope(env, scope);
-    *al = SSL_AD_INTERNAL_ERROR;
-    return -1;
-  }
-
-  napi_valuetype type;
-  napi_typeof(env, result, &type);
-  if (type == napi_null || type == napi_undefined) {
-    napi_close_handle_scope(env, scope);
-    return 0;  // skip this extension
-  }
-
-  bool is_buffer = false;
-  napi_is_buffer(env, result, &is_buffer);
-  if (!is_buffer) {
-    napi_close_handle_scope(env, scope);
-    *al = SSL_AD_INTERNAL_ERROR;
-    return -1;
-  }
-
-  void* buf_data;
-  size_t len;
-  napi_get_buffer_info(env, result, &buf_data, &len);
-  if (len == 0) {
+  if (data->static_data.empty()) {
     *out = nullptr;
     *outlen = 0;
-    napi_close_handle_scope(env, scope);
-    return 1;
+  } else {
+    *out = data->static_data.data();
+    *outlen = data->static_data.size();
   }
-
-  unsigned char* buf = static_cast<unsigned char*>(OPENSSL_malloc(len));
-  if (buf == nullptr) {
-    napi_close_handle_scope(env, scope);
-    *al = SSL_AD_INTERNAL_ERROR;
-    return -1;
-  }
-  memcpy(buf, buf_data, len);
-  *out = buf;
-  *outlen = len;
-  napi_close_handle_scope(env, scope);
   return 1;
 }
 
-static void CustomExtFreeCallback(SSL* s,
-                                  unsigned int ext_type,
-                                  unsigned int context,
-                                  const unsigned char* out,
-                                  void* add_arg) {
-  ExtensionData* data = static_cast<ExtensionData*>(add_arg);
-  if (data->is_static) return;
-  if (out != nullptr) {
-    OPENSSL_free(const_cast<unsigned char*>(out));
-  }
-}
-
+// We never inspect what a server echoes back - registering the extension is only
+// how OpenSSL is told to tolerate it rather than reject it as a bad extension.
 static int CustomExtParseCallback(SSL* s,
                                   unsigned int ext_type,
                                   unsigned int context,
@@ -210,61 +127,6 @@ static int CustomExtParseCallback(SSL* s,
                                   size_t chainidx,
                                   int* al,
                                   void* parse_arg) {
-  ExtensionData* data = static_cast<ExtensionData*>(parse_arg);
-  if (data->parse_cb == nullptr) {
-    return 1;  // accept any data
-  }
-
-  napi_env env = data->env;
-  napi_handle_scope scope;
-  if (napi_open_handle_scope(env, &scope) != napi_ok) {
-    *al = SSL_AD_INTERNAL_ERROR;
-    return 0;
-  }
-
-  void* copy_data;
-  napi_value buf;
-  if (napi_create_buffer_copy(env, inlen, in, &copy_data, &buf) != napi_ok) {
-    napi_close_handle_scope(env, scope);
-    *al = SSL_AD_INTERNAL_ERROR;
-    return 0;
-  }
-
-  napi_value cb = nullptr, recv, argv[3], result;
-  if (napi_get_reference_value(env, data->parse_cb, &cb) != napi_ok ||
-      cb == nullptr) {
-    napi_close_handle_scope(env, scope);
-    *al = SSL_AD_INTERNAL_ERROR;
-    return 0;
-  }
-  napi_get_undefined(env, &recv);
-  napi_create_double(env, ext_type, &argv[0]);
-  napi_create_double(env, context, &argv[1]);
-  argv[2] = buf;
-
-  // Treat any non-ok status as failure so `result` is never read uninitialized.
-  napi_status status = napi_call_function(env, recv, cb, 3, argv, &result);
-  if (status != napi_ok) {
-    napi_value exc;
-    napi_get_and_clear_last_exception(env, &exc);
-    napi_close_handle_scope(env, scope);
-    *al = SSL_AD_INTERNAL_ERROR;
-    return 0;
-  }
-
-  napi_valuetype type;
-  napi_typeof(env, result, &type);
-  if (type == napi_boolean) {
-    bool value = true;
-    napi_get_value_bool(env, result, &value);
-    if (!value) {
-      napi_close_handle_scope(env, scope);
-      *al = SSL_AD_DECODE_ERROR;
-      return 0;
-    }
-  }
-
-  napi_close_handle_scope(env, scope);
   return 1;
 }
 
@@ -302,11 +164,7 @@ static void FreeCtxExtensions(void* parent, void* ptr, CRYPTO_EX_DATA* ad,
                               int idx, long argl, void* argp) {
   if (ptr == nullptr) return;
   auto* list = static_cast<std::vector<ExtensionData*>*>(ptr);
-  for (ExtensionData* data : *list) {
-    if (data->add_cb) napi_delete_reference(data->env, data->add_cb);
-    if (data->parse_cb) napi_delete_reference(data->env, data->parse_cb);
-    delete data;
-  }
+  for (ExtensionData* data : *list) delete data;
   delete list;
 }
 
@@ -342,11 +200,11 @@ static bool RegisterCtxExtension(SSL_CTX* ctx, ExtensionData* data) {
 
 // addCustomExtension(nativeCtx, extType, flags, data|null, add|null, parse|null)
 napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
-  size_t argc = 6;
-  napi_value argv[6];
+  size_t argc = 4;
+  napi_value argv[4];
   napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-  if (argc < 6) {
-    napi_throw_type_error(env, nullptr, "Expected 6 arguments");
+  if (argc < 4) {
+    napi_throw_type_error(env, nullptr, "Expected 4 arguments");
     return nullptr;
   }
 
@@ -375,60 +233,42 @@ napi_value AddCustomExtension(napi_env env, napi_callback_info info) {
     napi_throw_error(env, nullptr, "tls-impersonate: out of memory");
     return nullptr;
   }
-  ext_data->env = env;
-  ext_data->add_cb = nullptr;
-  ext_data->parse_cb = nullptr;
-
   bool is_buffer = false;
   napi_is_buffer(env, argv[3], &is_buffer);
-  napi_valuetype add_type;
-  napi_typeof(env, argv[4], &add_type);
-
-  if (is_buffer) {
-    ext_data->is_static = true;
-    void* data;
-    size_t len;
-    napi_get_buffer_info(env, argv[3], &data, &len);
-    if (len > 0xFFFF) {  // a TLS extension's data is at most 65535 bytes
-      delete ext_data;
-      napi_throw_range_error(env, nullptr,
-          "extension data must be at most 65535 bytes");
-      return nullptr;
-    }
-    if (len > 0) {
-      try {
-        ext_data->static_data.resize(len);
-      } catch (...) {
-        delete ext_data;
-        napi_throw_error(env, nullptr, "tls-impersonate: out of memory");
-        return nullptr;
-      }
-      memcpy(ext_data->static_data.data(), data, len);
-    }
-  } else if (add_type == napi_function) {
-    ext_data->is_static = false;
-    napi_create_reference(env, argv[4], 1, &ext_data->add_cb);
-  } else {
+  if (!is_buffer) {
     delete ext_data;
-    napi_throw_type_error(env, nullptr,
-        "Either data (Buffer) or add (Function) must be provided");
+    napi_throw_type_error(env, nullptr, "data must be a Buffer");
     return nullptr;
   }
 
-  napi_valuetype parse_type;
-  napi_typeof(env, argv[5], &parse_type);
-  if (parse_type == napi_function) {
-    napi_create_reference(env, argv[5], 1, &ext_data->parse_cb);
+  void* data;
+  size_t len;
+  napi_get_buffer_info(env, argv[3], &data, &len);
+  if (len > 0xFFFF) {  // a TLS extension's data is at most 65535 bytes
+    delete ext_data;
+    napi_throw_range_error(env, nullptr,
+        "extension data must be at most 65535 bytes");
+    return nullptr;
+  }
+  if (len > 0) {
+    try {
+      ext_data->static_data.resize(len);
+    } catch (...) {
+      delete ext_data;
+      napi_throw_error(env, nullptr, "tls-impersonate: out of memory");
+      return nullptr;
+    }
+    memcpy(ext_data->static_data.data(), data, len);
   }
 
+  // No free callback: `out` always points into static_data, which the SSL_CTX's
+  // ex_data teardown owns, so there is nothing per-call to release.
   int rc = SSL_CTX_add_custom_ext(
       ssl_ctx, ext_type, ctx_flags,
-      CustomExtAddCallback, CustomExtFreeCallback, ext_data,
+      CustomExtAddCallback, nullptr, ext_data,
       CustomExtParseCallback, ext_data);
 
   if (rc != 1) {
-    if (ext_data->add_cb) napi_delete_reference(env, ext_data->add_cb);
-    if (ext_data->parse_cb) napi_delete_reference(env, ext_data->parse_cb);
     delete ext_data;
     napi_throw_error(env, "ERR_ADD_CUSTOM_EXT",
         "SSL_CTX_add_custom_ext failed (duplicate or internally-handled "
