@@ -3,7 +3,7 @@ import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
 import { captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
 
-// Chrome 133+ ClientHello spec
+// Chrome 155 ClientHello spec
 const chromeSpec: ClientHelloSpec = {
     cipherSuites: [
         0x3a3a, // GREASE cipher (skipped by impersonate, not in fingerprint)
@@ -31,6 +31,8 @@ const chromeSpec: ClientHelloSpec = {
         { type: 43 },     // supported_versions
         { type: 45 },     // psk_key_exchange_modes
         { type: 51 },     // key_share
+        { type: 4832 },   // server_padding
+        { type: 51764 },  // trust_anchors
         { type: 17613 },  // application_settings (ALPS, default data: "h2")
         { type: 65037 },  // encrypted_client_hello (GREASE ECH, default data)
         { type: 0x4a4a }, // GREASE extension 2
@@ -40,19 +42,29 @@ const chromeSpec: ClientHelloSpec = {
         0x11ec, 0x001d, 0x0017, 0x0018,
     ],
     signatureAlgorithms: [
+        0xfafa, // GREASE sigalg (skipped; not part of JA4 either)
+        // ML-DSA, offered since Chrome 154:
+        0x0904, 0x0905, 0x0906,
         0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601,
+    ],
+    supportedVersions: [
+        0x4a4a, // GREASE version (skipped)
+        0x0304, 0x0303,
     ],
     alpnProtocols: ['h2', 'http/1.1'],
 };
 
-// Expected extension set (GREASE-filtered), in the order Chrome sends them
-const CHROME_EXPECTED_EXTENSIONS = [0, 23, 65281, 10, 11, 35, 16, 5, 18, 27, 13, 43, 45, 51, 17613, 65037];
+// Expected extension set (GREASE-filtered). Note that in reality order is randomized.
+const CHROME_EXPECTED_EXTENSIONS = [
+    0, 5, 10, 11, 13, 16, 18, 23, 27, 35, 43, 45, 51, 4832, 17613, 51764, 65037, 65281,
+];
 
-// Expected JA3 hash (assumes correct ec_point_formats: [0] uncompressed only)
-const CHROME_EXPECTED_JA3 = 'f418dd9b4f923541607d5763fa771b1f';
+// Expected full JA4 fingerprint, as measured from real Chrome 155.0.8059.39
+const CHROME_EXPECTED_JA4 = 't13d1518h2_8daaf6152771_4980c97edce0';
 
-// Expected full JA4 fingerprint
-const CHROME_EXPECTED_JA4 = 't13d1516h2_8daaf6152771_d8a2da3f94cd';
+// Chrome JA3 matching the JA4 above. Note that since extension order and GREASE is 
+// applied randomly, this is just a sample - there is no fixed Chrome JA3 nowadays.
+const CHROME_EXPECTED_JA3 = '54e74f2b334705ff3e873478157eaa95';
 
 describe('Chrome TLS fingerprint impersonation', () => {
     it('should match Chrome cipher suites exactly', async () => {
@@ -73,6 +85,7 @@ describe('Chrome TLS fingerprint impersonation', () => {
         const hello = await captureClientHello(tlsOptions);
 
         expect(hello.signatureAlgorithms).to.deep.equal([
+            0x0904, 0x0905, 0x0906,
             0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601,
         ]);
     });

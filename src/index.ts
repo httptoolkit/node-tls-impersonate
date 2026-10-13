@@ -339,6 +339,8 @@ function getDefaultExtensionData(type: number): Buffer | undefined {
         case 34: return generateGreaseDelegatedCredentialsPayload();
         case 17613: return generateAlpsPayload();
         case 65037: return generateGreaseEchPayload(); // ECH GREASE
+        case EXT_SERVER_PADDING: return Buffer.from([0x00, 0x00]); // Chrome 155 always sends 0 anyway
+        case EXT_TRUST_ANCHORS: return Buffer.from([0x00, 0x00]); // Should be safe-ish, works everywhere for now
         default: return undefined;
     }
 }
@@ -364,6 +366,8 @@ const EXT_SESSION_TICKET = 35;
 const EXT_POST_HANDSHAKE_AUTH = 49;
 const EXT_SUPPORTED_VERSIONS = 43;
 const EXT_SIGNATURE_ALGORITHMS = 13;
+const EXT_SERVER_PADDING = 4832;
+const EXT_TRUST_ANCHORS = 51764;
 
 /** TLS version wire codepoints, as they appear in supported_versions & client_version */
 const TLS1_0 = 0x0301;
@@ -786,11 +790,18 @@ export function impersonate(
     // ALPS settings, DC credentials in Certificate, record_size_limit in EE).
     // Without these contexts, OpenSSL rejects the server's response with a
     // "bad extension" error, failing the handshake.
+    //
+    // Accept these extensions anywhere they could be listed. Especially important
+    // for GREASE, as registering the extension can _tighten_ validation for given
+    // ids vs the default, and GREASE can appear all over the place.
     const customExtContext = constants.SSL_EXT_CLIENT_HELLO
+        | constants.SSL_EXT_TLS1_2_SERVER_HELLO
         | constants.SSL_EXT_TLS1_3_SERVER_HELLO
         | constants.SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS
         | constants.SSL_EXT_TLS1_3_HELLO_RETRY_REQUEST
-        | constants.SSL_EXT_TLS1_3_CERTIFICATE;
+        | constants.SSL_EXT_TLS1_3_CERTIFICATE
+        | constants.SSL_EXT_TLS1_3_NEW_SESSION_TICKET
+        | constants.SSL_EXT_TLS1_3_CERTIFICATE_REQUEST;
 
     // Register custom extensions. Predefined extensions are handled by OpenSSL
     // via the config above; some (like SCT=18) can still be added as custom

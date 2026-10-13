@@ -268,6 +268,9 @@ const REAL_WORLD_TARGETS = [
 export function runRealWorldTests(name: string, spec: ClientHelloSpec): void {
     for (const host of REAL_WORLD_TARGETS) {
         it(`${name} spec should complete TLS handshake with ${host}`, async function () {
+            // Real internet means we need to relax timeouts here:
+            this.timeout(10_000);
+
             const { tlsOptions } = impersonate(spec);
             const result = await verifyRemoteHandshake.call(this, host, tlsOptions);
             if (!result.protocol) {
@@ -298,11 +301,47 @@ export async function verifyRemoteHandshake(
             ...options,
         });
         socket.on('secureConnect', () => {
-            clearTimeout(timer);
             const protocol = socket.getProtocol();
             const alpn = socket.alpnProtocol;
-            socket.destroy();
-            resolve({ ok: true, protocol, alpn });
+
+            // We need to validate more than just a handshake completion, since some configurations can
+            // result in breakage immediately after (bad custom exts breaking parsing of NewSessionTicket).
+            // To handle this, we send a minimal H1 request or H2 preface+settings to confirm we can read
+            // & write successfully as expected, and trigger any behaviour like session tickets.
+            let settled = false;
+            let sawResponse = false;
+            const finish = (
+                result: { ok: true; protocol: string | null; alpn: string | false | null }
+                    | { ok: false; error: string }
+            ) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                clearTimeout(hold);
+                socket.destroy();
+                resolve(result);
+            };
+            const settle = () => finish({ ok: true, protocol, alpn });
+
+            socket.write(alpn === 'h2'
+                // HTTP/2 client connection preface, then an empty SETTINGS frame
+                ? Buffer.concat([
+                    Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n', 'ascii'),
+                    Buffer.from([0, 0, 0, 0x04, 0, 0, 0, 0, 0]),
+                ])
+                : Buffer.from(`HEAD / HTTP/1.1\r\nHost: ${hostname}\r\nConnection: close\r\n\r\n`, 'ascii')
+            );
+            socket.resume();
+
+            // Set once we get a session ticket, or the conn stays open for 1s, or we get
+            // an 'end' with any data received beforehand.
+            const hold = setTimeout(settle, 1000);
+            socket.once('session', settle);
+            socket.on('data', () => { sawResponse = true; });
+            socket.once('end', () => {
+                if (sawResponse) settle();
+                else finish({ ok: false, error: 'server closed without responding' });
+            });
         });
         socket.on('error', (e: unknown) => {
             clearTimeout(timer);
