@@ -107,6 +107,10 @@ static int CustomExtAddCallback(SSL* s,
   ExtensionData* data = static_cast<ExtensionData*>(add_arg);
 
   if (data->is_static) {
+    // We're simulating client hello fingerprints - don't send our fixed (CH specific)
+    // custom data in any other scenarios:
+    if ((context & SSL_EXT_CLIENT_HELLO) == 0) return 0;
+
     if (data->static_data.empty()) {
       *out = nullptr;
       *outlen = 0;
