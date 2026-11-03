@@ -3,7 +3,6 @@ import * as crypto from 'node:crypto';
 import {
     addCustomExtension,
     isPredefinedExtension,
-    enableCompressCertificate,
     enablePostHandshakeAuth,
     setCiphersuites,
     getCiphers,
@@ -436,6 +435,20 @@ function opensslAtLeast(major: number, minor: number): boolean {
 
 const ALL_EC_POINT_FORMATS = [0, 1, 2];
 
+const CERT_COMPRESSION_NAMES: Record<number, tls.CertificateCompressionAlgorithm> = {
+    1: 'zlib',
+    2: 'brotli',
+    3: 'zstd',
+};
+
+/** The certificate compression algorithms this OpenSSL can decompress, which are the
+ *  only ones it will advertise. Node < 24.19 has no certificate compression support. */
+function availableCertCompression(): Set<tls.CertificateCompressionAlgorithm> {
+    return new Set(typeof tls.getCertificateCompressionAlgorithms === 'function'
+        ? tls.getCertificateCompressionAlgorithms()
+        : []);
+}
+
 /** The ec_point_formats lists this OpenSSL can send. Before 3.6 it always sends all
  *  three. From 3.6 it defaults to uncompressed only, and SSL_OP_LEGACY_EC_POINT_FORMATS
  *  restores all three. */
@@ -523,20 +536,42 @@ function extensionField<T>(hello: ParsedClientHello, extId: number, field: strin
     return hello.extensions.find((ext) => ext.id === extId)?.data?.[field] as T | undefined;
 }
 
+/** Rebuild the data of the custom extensions whose content is safe to mirror */
+function capturedExtensionData(ext: ParsedClientHello['extensions'][number]): Buffer | undefined {
+    const parsedAlgorithms: unknown = ext.data?.algorithms;
+    if (ext.id === EXT_COMPRESS_CERTIFICATE && Array.isArray(parsedAlgorithms)) {
+        const algorithms = (parsedAlgorithms as unknown[]).filter((a): a is number => typeof a === 'number');
+        const data = Buffer.alloc(1 + algorithms.length * 2);
+        data[0] = algorithms.length * 2;
+        algorithms.forEach((alg, i) => data.writeUInt16BE(alg, 1 + i * 2));
+        return data;
+    }
+    if (ext.id === EXT_RECORD_SIZE_LIMIT && typeof ext.data?.recordSizeLimit === 'number') {
+        const data = Buffer.alloc(2);
+        data.writeUInt16BE(ext.data.recordSizeLimit);
+        return data;
+    }
+    return undefined;
+}
+
 /**
  * Convert a parsed ClientHello (from read-tls-client-hello) into a
  * ClientHelloSpec: cipher suites, extension types in wire order, supported
  * groups, signature algorithms, EC point formats and ALPN. GREASE values pass
  * through as-is (impersonate handles them).
  *
- * Extension *data* is not carried over: impersonate regenerates predefined
+ * Extension *data* is mostly not carried over: impersonate regenerates predefined
  * extensions and applies defaults for known custom ones, so the reproduction
  * targets the fingerprint (types and order), not byte-exact custom payloads.
+ * Certificate compression algorithms and the record size limit are kept.
  */
 function clientHelloToSpec(hello: ParsedClientHello): ClientHelloSpec {
     return {
         cipherSuites: hello.cipherSuites,
-        extensions: hello.extensions.map((ext) => ({ type: ext.id })),
+        extensions: hello.extensions.map((ext) => {
+            const data = capturedExtensionData(ext);
+            return data ? { type: ext.id, data } : { type: ext.id };
+        }),
         supportedGroups: extensionField<number[]>(hello, 10, 'groups') ?? [],
         signatureAlgorithms: extensionField<number[]>(hello, 13, 'algorithms') ?? [],
         supportedVersions: extensionField<number[]>(hello, EXT_SUPPORTED_VERSIONS, 'versions'),
@@ -672,6 +707,20 @@ export function impersonate(
 
     // Scan extensions for config-driven features
     const extTypes = new Set(spec.extensions.map(e => e.type));
+
+    const requestedCertCompression = new Set<number>();
+    const certCompression: tls.CertificateCompressionAlgorithm[] = [];
+    if (extTypes.has(EXT_COMPRESS_CERTIFICATE)) {
+        const ext27 = spec.extensions.find(e => e.type === EXT_COMPRESS_CERTIFICATE);
+        const available = availableCertCompression();
+        for (const id of ext27?.data ? parseCertCompressionAlgorithms(ext27.data) : [2]) {
+            requestedCertCompression.add(id);
+            const name = CERT_COMPRESSION_NAMES[id];
+            if (name && available.has(name) && !certCompression.includes(name)) {
+                certCompression.push(name);
+            }
+        }
+    }
     const connectOpts: Omit<ImpersonateResult['tlsOptions'], 'secureContext'> = {};
 
     if (extTypes.has(EXT_STATUS_REQUEST)) {
@@ -697,6 +746,8 @@ export function impersonate(
             ...(sigalgs.length ? { sigalgs: sigalgs.map(s => s.name).join(':') } : {}),
             // An empty group list fails every ECDHE or TLS 1.3 handshake, so fall back to defaults
             ...(groups.length ? { ecdhCurve: groups.map(g => g.name).join(':') } : {}),
+            // Node rejects certificate compression unless TLS 1.3 can be negotiated
+            ...(certCompression.length && range.max >= TLS1_3 ? { certificateCompression: certCompression } : {}),
             minVersion: VERSION_NAMES[emitScsv ? TLS1_0 : range.min],
             maxVersion: VERSION_NAMES[range.max],
         });
@@ -879,23 +930,21 @@ export function impersonate(
         enablePostHandshakeAuth(ctx);
     }
 
-    if (extTypes.has(EXT_COMPRESS_CERTIFICATE)) {
-        const ext27 = spec.extensions.find(e => e.type === EXT_COMPRESS_CERTIFICATE);
-        const algorithms = ext27?.data
-            ? parseCertCompressionAlgorithms(ext27.data)
-            : [2]; // Default to brotli
-        try {
-            enableCompressCertificate(ctx, algorithms);
-        } catch (e) {
-            // Degrade gracefully only when this OpenSSL build lacks certificate
-            // compression; surface any other failure (e.g. unsupported runtime).
-            if ((e as { code?: string }).code !== 'ERR_CERT_COMPRESSION') throw e;
-            unsupported.push({
-                kind: 'extension',
-                id: EXT_COMPRESS_CERTIFICATE,
-                reason: 'certificate compression not available in this OpenSSL build',
-            });
-        }
+    if (extTypes.has(EXT_COMPRESS_CERTIFICATE) && certCompression.length < requestedCertCompression.size) {
+        unsupported.push({
+            kind: 'extension',
+            id: EXT_COMPRESS_CERTIFICATE,
+            reason: certCompression.length
+                ? 'some requested certificate compression algorithms are not available in this OpenSSL build'
+                : 'certificate compression not available in this OpenSSL build',
+        });
+    }
+    if (certCompression.length && !offersTls13) {
+        unsupported.push({
+            kind: 'extension',
+            id: EXT_COMPRESS_CERTIFICATE,
+            reason: 'compress_certificate is only sent when TLS 1.3 is offered',
+        });
     }
 
     // For server responses to our custom extensions. Servers may echo back

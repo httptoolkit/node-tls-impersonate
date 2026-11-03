@@ -24,6 +24,7 @@ export interface CapturedClientHello {
     extensions: number[];
     groups: number[];
     ecPointFormats: number[];
+    certCompressionAlgorithms: number[] | undefined;
     signatureAlgorithms: number[];
     ja3: string;
     ja4: string;
@@ -118,6 +119,7 @@ function toCapturedHello(
         extensions: noGrease(hello.extensions.map((e) => e.id)),
         groups: noGrease(getExtensionData(hello, 10)?.groups ?? []),
         ecPointFormats: getExtensionData(hello, 11)?.formats ?? [],
+        certCompressionAlgorithms: getExtensionData(hello, 27)?.algorithms,
         signatureAlgorithms: noGrease(getExtensionData(hello, 13)?.algorithms ?? []),
         ja3: hello.ja3,
         ja4: hello.ja4,

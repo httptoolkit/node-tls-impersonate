@@ -1,5 +1,6 @@
+import * as tls from 'node:tls';
 import { expect } from 'chai';
-import { impersonate } from '../src/index.js';
+import { impersonate, impersonateFromClientHello } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
 import { bundlesOpenSsl4, captureClientHello } from './test-helpers.js';
 
@@ -161,6 +162,31 @@ describe('Baseline impersonation', () => {
         // ...while the GREASE-filtered fingerprint view excludes them.
         expect(hello.extensions).to.not.include(0x2a2a);
         expect(hello.extensions).to.not.include(0x4a4a);
+    });
+
+    it('only advertises certificate compression algorithms this build supports', async () => {
+        const spec: ClientHelloSpec = {
+            cipherSuites: [0x1301, 0xc02b],
+            extensions: [
+                { type: 0 }, { type: 10 }, { type: 13 }, { type: 43 }, { type: 51 },
+                { type: 27, data: Buffer.from([0x04, 0x00, 0x07 /* unknown */, 0x00, 0x02]) },
+            ],
+            supportedGroups: [0x001d, 0x0017],
+            signatureAlgorithms: [0x0403],
+        };
+
+        const { tlsOptions, unsupported } = impersonate(spec);
+        const hello = await captureClientHello(tlsOptions);
+        const report = unsupported.find(u => u.kind === 'extension' && u.id === 27);
+
+        if (tls.getCertificateCompressionAlgorithms === undefined) {
+            expect(report?.reason).to.equal('certificate compression not available in this OpenSSL build');
+            expect(hello.certCompressionAlgorithms).to.equal(undefined);
+        } else {
+            expect(report?.reason).to.equal(
+                'some requested certificate compression algorithms are not available in this OpenSSL build');
+            expect(hello.certCompressionAlgorithms).to.deep.equal([2]);
+        }
     });
 
     it('degrades gracefully for unreproducible codepoints and reports them', async () => {

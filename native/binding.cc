@@ -310,64 +310,6 @@ napi_value IsPredefinedExtension(napi_env env, napi_callback_info info) {
   return result;
 }
 
-// enableCompressCertificate(nativeCtx, algs) - algs: 1=zlib, 2=brotli, 3=zstd
-napi_value EnableCompressCertificate(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value argv[2];
-  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-  if (argc < 2) {
-    napi_throw_type_error(env, nullptr,
-        "Expected 2 arguments: nativeCtx, algorithms");
-    return nullptr;
-  }
-
-  SSL_CTX* ssl_ctx = GetSSLCtx(env, argv[0]);
-  if (ssl_ctx == nullptr) return nullptr;
-
-  bool is_array = false;
-  napi_is_array(env, argv[1], &is_array);
-  if (!is_array) {
-    napi_throw_type_error(env, nullptr,
-        "algorithms must be an array of integers");
-    return nullptr;
-  }
-
-  uint32_t len;
-  napi_get_array_length(env, argv[1], &len);
-  if (len > 255) {  // only a handful of compression algorithms exist
-    napi_throw_range_error(env, nullptr, "too many algorithms (max 255)");
-    return nullptr;
-  }
-  std::vector<int> alg_ids;
-  try {
-    alg_ids.resize(len);
-  } catch (...) {
-    napi_throw_error(env, nullptr, "tls-impersonate: out of memory");
-    return nullptr;
-  }
-  for (uint32_t i = 0; i < len; i++) {
-    napi_value element;
-    napi_get_element(env, argv[1], i, &element);
-    uint32_t value;
-    if (!GetUint32Arg(env, element, &value,
-                      "Each algorithm must be a non-negative integer")) {
-      return nullptr;
-    }
-    alg_ids[i] = static_cast<int>(value);
-  }
-
-  int rc = SSL_CTX_set1_cert_comp_preference(ssl_ctx, alg_ids.data(),
-                                             static_cast<size_t>(len));
-  if (rc != 1) {
-    napi_throw_error(env, "ERR_CERT_COMPRESSION",
-        "SSL_CTX_set1_cert_comp_preference failed "
-        "(unsupported compression algorithm?)");
-    return nullptr;
-  }
-
-  return nullptr;
-}
-
 // setCiphersuites(nativeCtx, ciphersuites) - sets the TLS 1.3 ciphersuite list
 // and order (SSL_CTX_set_ciphersuites). The OpenSSL API differs for TLS 1.2
 // (exposed by Node ciphers option) and 1.3 (not exposed at all).
@@ -631,8 +573,6 @@ napi_value Init(napi_env env, napi_value exports) {
      nullptr, napi_enumerable, nullptr},
     {"getSSLCtxAvailable", nullptr, GetSSLCtxAvailable, nullptr, nullptr,
      nullptr, napi_enumerable, nullptr},
-    {"enableCompressCertificate", nullptr, EnableCompressCertificate, nullptr,
-     nullptr, nullptr, napi_enumerable, nullptr},
     {"enablePostHandshakeAuth", nullptr, EnablePostHandshakeAuth, nullptr,
      nullptr, nullptr, napi_enumerable, nullptr},
     {"setCiphersuites", nullptr, SetCiphersuites, nullptr, nullptr, nullptr,
@@ -681,11 +621,6 @@ napi_value Init(napi_env env, napi_value exports) {
               SSL_EXT_TLS1_3_NEW_SESSION_TICKET);
   SetConstant(env, constants, "SSL_EXT_TLS1_3_CERTIFICATE_REQUEST",
               SSL_EXT_TLS1_3_CERTIFICATE_REQUEST);
-
-  SetConstant(env, constants, "TLSEXT_comp_cert_zlib", TLSEXT_comp_cert_zlib);
-  SetConstant(env, constants, "TLSEXT_comp_cert_brotli",
-              TLSEXT_comp_cert_brotli);
-  SetConstant(env, constants, "TLSEXT_comp_cert_zstd", TLSEXT_comp_cert_zstd);
 
   napi_set_named_property(env, exports, "constants", constants);
   return exports;

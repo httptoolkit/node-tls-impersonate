@@ -15,7 +15,6 @@ interface NativeBinding {
     isPredefinedExtension(extType: number): boolean;
     getSSLCtxAvailable(): boolean;
 
-    enableCompressCertificate(nativeCtx: object, algorithms: number[]): void;
     enablePostHandshakeAuth(nativeCtx: object): void;
     setCiphersuites(nativeCtx: object, ciphersuites: string): void;
     getCiphers(nativeCtx: object): number[];
@@ -41,9 +40,6 @@ interface NativeBinding {
         SSL_EXT_TLS1_3_CERTIFICATE: number;
         SSL_EXT_TLS1_3_NEW_SESSION_TICKET: number;
         SSL_EXT_TLS1_3_CERTIFICATE_REQUEST: number;
-        TLSEXT_comp_cert_zlib: number;
-        TLSEXT_comp_cert_brotli: number;
-        TLSEXT_comp_cert_zstd: number;
     };
 }
 
@@ -88,23 +84,6 @@ export function isPredefinedExtension(extType: number): boolean {
  */
 export function getSSLCtxAvailable(): boolean {
     return binding.getSSLCtxAvailable();
-}
-
-/**
- * Enable certificate compression on a SecureContext.
- * Causes the compress_certificate extension (27) to be sent.
- *
- * Note: Requires OpenSSL to be built with compression support.
- * May throw if the compression algorithms are not available.
- *
- * @param algorithms - Array of compression algorithm IDs in preference order.
- *   Use constants: TLSEXT_comp_cert_zlib (1), TLSEXT_comp_cert_brotli (2), TLSEXT_comp_cert_zstd (3)
- */
-export function enableCompressCertificate(
-    ctx: tls.SecureContext,
-    algorithms: number[]
-): void {
-    binding.enableCompressCertificate(ctx, algorithms);
 }
 
 /**
