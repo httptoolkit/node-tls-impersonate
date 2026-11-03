@@ -13,6 +13,7 @@
 #include <v8.h>
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <new>
@@ -116,8 +117,37 @@ static int CustomExtAddCallback(SSL* s,
   return 1;
 }
 
-// We never inspect what a server echoes back - registering the extension is only
-// how OpenSSL is told to tolerate it rather than reject it as a bad extension.
+static constexpr unsigned int kRecordSizeLimitExt = 28;
+
+// OpenSSL doesn't implement record_size_limit (RFC 8449), but servers may enforce
+// their limit once we've advertised the extension, so apply it to our sends.
+static int ApplyRecordSizeLimit(SSL* s,
+                                unsigned int context,
+                                const unsigned char* in,
+                                size_t inlen,
+                                int* al) {
+  if (inlen != 2) {
+    *al = SSL_AD_DECODE_ERROR;
+    return 0;
+  }
+  long limit = (in[0] << 8) | in[1];
+  if (limit < 64) {
+    *al = SSL_AD_ILLEGAL_PARAMETER;
+    return 0;
+  }
+  // TLS 1.3 limits include the inner content type byte
+  if (context & SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS) limit -= 1;
+  // OpenSSL can't send fragments smaller than 512 bytes
+  limit = std::clamp(limit, 512L, static_cast<long>(SSL3_RT_MAX_PLAIN_LENGTH));
+  if (SSL_set_max_send_fragment(s, limit) != 1) {
+    *al = SSL_AD_INTERNAL_ERROR;
+    return 0;
+  }
+  return 1;
+}
+
+// Other than record_size_limit, registering the extension is only how OpenSSL is
+// told to tolerate a server's response rather than reject it as a bad extension.
 static int CustomExtParseCallback(SSL* s,
                                   unsigned int ext_type,
                                   unsigned int context,
@@ -127,6 +157,10 @@ static int CustomExtParseCallback(SSL* s,
                                   size_t chainidx,
                                   int* al,
                                   void* parse_arg) {
+  if (ext_type == kRecordSizeLimitExt &&
+      (context & (SSL_EXT_TLS1_2_SERVER_HELLO | SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS))) {
+    return ApplyRecordSizeLimit(s, context, in, inlen, al);
+  }
   return 1;
 }
 

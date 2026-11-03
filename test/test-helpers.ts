@@ -23,8 +23,10 @@ export interface CapturedClientHello {
     ciphers: number[];
     extensions: number[];
     groups: number[];
+    keyShareGroups: number[];
     ecPointFormats: number[];
     certCompressionAlgorithms: number[] | undefined;
+    recordSizeLimit: number | undefined;
     signatureAlgorithms: number[];
     ja3: string;
     ja4: string;
@@ -118,8 +120,10 @@ function toCapturedHello(
         ciphers: noGrease(hello.cipherSuites),
         extensions: noGrease(hello.extensions.map((e) => e.id)),
         groups: noGrease(getExtensionData(hello, 10)?.groups ?? []),
+        keyShareGroups: noGrease(getExtensionData(hello, 51)?.entries.map((e) => e.group) ?? []),
         ecPointFormats: getExtensionData(hello, 11)?.formats ?? [],
         certCompressionAlgorithms: getExtensionData(hello, 27)?.algorithms,
+        recordSizeLimit: getExtensionData(hello, 28)?.recordSizeLimit,
         signatureAlgorithms: noGrease(getExtensionData(hello, 13)?.algorithms ?? []),
         ja3: hello.ja3,
         ja4: hello.ja4,

@@ -41,6 +41,7 @@ const chromeSpec: ClientHelloSpec = {
         0x6a6a, // GREASE group (skipped)
         0x11ec, 0x001d, 0x0017, 0x0018,
     ],
+    keyShareGroups: [0x6a6a, 0x11ec, 0x001d],
     signatureAlgorithms: [
         0xfafa, // GREASE sigalg (skipped; not part of JA4 either)
         // ML-DSA, offered since Chrome 154:
@@ -109,6 +110,13 @@ describe('Chrome TLS fingerprint impersonation', () => {
         const { unsupported } = impersonate(chromeSpec);
         expect(unsupported.some(u => u.kind === 'extension' && u.id === 27)).to.be.true;
     }));
+
+    it('should send key shares for the same groups as Chrome', async () => {
+        const { tlsOptions } = impersonate(chromeSpec);
+        const hello = await captureClientHello(tlsOptions);
+
+        expect(hello.keyShareGroups).to.deep.equal([0x11ec, 0x001d]);
+    });
 
     it('should send only uncompressed EC point format', expectedFailure(BEFORE_OPENSSL_4, async () => {
         const { tlsOptions } = impersonate(chromeSpec);

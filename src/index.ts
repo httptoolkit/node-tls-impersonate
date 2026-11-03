@@ -188,6 +188,10 @@ export interface ClientHelloSpec {
     /** Supported group IDs in wire order, including GREASE */
     supportedGroups: number[];
 
+    /** The groups from the key_share extension (51), including GREASE. Omit to send a key
+     *  share for the first supported group only. */
+    keyShareGroups?: number[];
+
     /** Signature algorithm IDs in wire order */
     signatureAlgorithms: number[];
 
@@ -388,11 +392,13 @@ const EXT_EC_POINT_FORMATS = 11;
 const EXT_PADDING = 21;
 const EXT_ENCRYPT_THEN_MAC = 22;
 const EXT_COMPRESS_CERTIFICATE = 27;
+const EXT_RECORD_SIZE_LIMIT = 28;
 const EXT_SESSION_TICKET = 35;
 const EXT_POST_HANDSHAKE_AUTH = 49;
 const EXT_SUPPORTED_VERSIONS = 43;
 const EXT_SUPPORTED_GROUPS = 10;
 const EXT_SIGNATURE_ALGORITHMS = 13;
+const EXT_KEY_SHARE = 51;
 const EXT_SERVER_PADDING = 4832;
 const EXT_TRUST_ANCHORS = 51764;
 const EXT_ENCRYPTED_CLIENT_HELLO = 65037;
@@ -434,6 +440,8 @@ function opensslAtLeast(major: number, minor: number): boolean {
 }
 
 const ALL_EC_POINT_FORMATS = [0, 1, 2];
+
+const MAX_KEY_SHARES = 4;
 
 const CERT_COMPRESSION_NAMES: Record<number, tls.CertificateCompressionAlgorithm> = {
     1: 'zlib',
@@ -573,6 +581,8 @@ function clientHelloToSpec(hello: ParsedClientHello): ClientHelloSpec {
             return data ? { type: ext.id, data } : { type: ext.id };
         }),
         supportedGroups: extensionField<number[]>(hello, 10, 'groups') ?? [],
+        keyShareGroups: extensionField<Array<{ group: number }>>(hello, EXT_KEY_SHARE, 'entries')
+            ?.map(entry => entry.group),
         signatureAlgorithms: extensionField<number[]>(hello, 13, 'algorithms') ?? [],
         supportedVersions: extensionField<number[]>(hello, EXT_SUPPORTED_VERSIONS, 'versions'),
         legacyVersion: hello.version,
@@ -708,6 +718,18 @@ export function impersonate(
     // Scan extensions for config-driven features
     const extTypes = new Set(spec.extensions.map(e => e.type));
 
+    // Marking key share groups with '*' needs OpenSSL 3.5+. Without it, OpenSSL sends a
+    // key share for the first group only.
+    const keyShareSupported = opensslAtLeast(3, 5);
+    const keyShareGroups = new Set(keyShareSupported ? spec.keyShareGroups ?? [] : []);
+    const groupList = () => {
+        let keyShares = 0;
+        return groups.map(g => keyShareGroups.has(g.id) && keyShares++ < MAX_KEY_SHARES
+            ? `*${g.name}`
+            : g.name
+        ).join(':');
+    };
+
     const requestedCertCompression = new Set<number>();
     const certCompression: tls.CertificateCompressionAlgorithm[] = [];
     if (extTypes.has(EXT_COMPRESS_CERTIFICATE)) {
@@ -745,7 +767,7 @@ export function impersonate(
             // skip the option, and OpenSSL then uses defaults for TLS 1.2+ (reported below)
             ...(sigalgs.length ? { sigalgs: sigalgs.map(s => s.name).join(':') } : {}),
             // An empty group list fails every ECDHE or TLS 1.3 handshake, so fall back to defaults
-            ...(groups.length ? { ecdhCurve: groups.map(g => g.name).join(':') } : {}),
+            ...(groups.length ? { ecdhCurve: groupList() } : {}),
             // Node rejects certificate compression unless TLS 1.3 can be negotiated
             ...(certCompression.length && range.max >= TLS1_3 ? { certificateCompression: certCompression } : {}),
             minVersion: VERSION_NAMES[emitScsv ? TLS1_0 : range.min],
@@ -944,6 +966,20 @@ export function impersonate(
             kind: 'extension',
             id: EXT_COMPRESS_CERTIFICATE,
             reason: 'compress_certificate is only sent when TLS 1.3 is offered',
+        });
+    }
+
+    if (spec.keyShareGroups?.length && !keyShareSupported) {
+        unsupported.push({
+            kind: 'extension',
+            id: EXT_KEY_SHARE,
+            reason: 'choosing key share groups needs OpenSSL 3.5+, so only the first group has one',
+        });
+    } else if (groups.filter(g => keyShareGroups.has(g.id)).length > MAX_KEY_SHARES) {
+        unsupported.push({
+            kind: 'extension',
+            id: EXT_KEY_SHARE,
+            reason: `OpenSSL sends at most ${MAX_KEY_SHARES} key shares`,
         });
     }
 

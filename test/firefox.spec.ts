@@ -34,6 +34,7 @@ const firefoxSpec: ClientHelloSpec = {
         { type: 65037 }, // encrypted_client_hello (GREASE ECH, default data)
     ],
     supportedGroups: [0x11ec, 0x001d, 0x0017, 0x0018, 0x0019, 0x0100, 0x0101],
+    keyShareGroups: [0x11ec, 0x001d, 0x0017],
     signatureAlgorithms: [
         0x0403, 0x0503, 0x0603,
         0x0804, 0x0805, 0x0806,
@@ -96,6 +97,13 @@ describe('Firefox TLS fingerprint impersonation', () => {
         const { unsupported } = impersonate(firefoxSpec);
         expect(unsupported.some(u => u.kind === 'extension' && u.id === 27)).to.be.true;
     }));
+
+    it('should send key shares for the same groups as Firefox', async () => {
+        const { tlsOptions } = impersonate(firefoxSpec);
+        const hello = await captureClientHello(tlsOptions);
+
+        expect(hello.keyShareGroups).to.deep.equal([0x11ec, 0x001d, 0x0017]);
+    });
 
     it('should send only uncompressed EC point format', expectedFailure(BEFORE_OPENSSL_4, async () => {
         const { tlsOptions } = impersonate(firefoxSpec);
