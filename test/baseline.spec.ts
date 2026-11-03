@@ -1,7 +1,8 @@
+import * as tls from 'node:tls';
 import { expect } from 'chai';
-import { impersonate } from '../src/index.js';
+import { impersonate, impersonateFromClientHello } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { bundlesOpenSsl4, captureClientHello } from './test-helpers.js';
+import { bundlesOpenSsl4, captureClientHello, isGreaseValue } from './test-helpers.js';
 
 describe('Baseline impersonation', () => {
     it('round-trip: impersonating Node.js defaults reproduces the same fingerprint data', async () => {
@@ -161,6 +162,90 @@ describe('Baseline impersonation', () => {
         // ...while the GREASE-filtered fingerprint view excludes them.
         expect(hello.extensions).to.not.include(0x2a2a);
         expect(hello.extensions).to.not.include(0x4a4a);
+    });
+
+    it('sends key shares for the requested groups', async () => {
+        const spec: ClientHelloSpec = {
+            cipherSuites: [0x1301, 0xc02b],
+            extensions: [{ type: 0 }, { type: 10 }, { type: 13 }, { type: 43 }, { type: 51 }],
+            supportedGroups: [0x11ec, 0x001d, 0x0017, 0x0018],
+            keyShareGroups: [0x11ec, 0x0017],
+            signatureAlgorithms: [0x0403],
+        };
+
+        const { tlsOptions, unsupported } = impersonate(spec);
+        const hello = await captureClientHello(tlsOptions);
+
+        expect(unsupported).to.deep.equal([]);
+        expect(hello.groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018]);
+        expect(hello.keyShareGroups).to.deep.equal([0x11ec, 0x0017]);
+    });
+
+    it('sends at most 4 key shares and reports the rest', async () => {
+        const spec: ClientHelloSpec = {
+            cipherSuites: [0x1301, 0xc02b],
+            extensions: [{ type: 0 }, { type: 10 }, { type: 13 }, { type: 43 }, { type: 51 }],
+            supportedGroups: [0x001d, 0x0017, 0x0018, 0x0019, 0x0100],
+            keyShareGroups: [0x001d, 0x0017, 0x0018, 0x0019, 0x0100],
+            signatureAlgorithms: [0x0403],
+        };
+
+        const { tlsOptions, unsupported } = impersonate(spec);
+        const hello = await captureClientHello(tlsOptions);
+
+        expect(unsupported).to.deep.equal([
+            { kind: 'extension', id: 51, reason: 'OpenSSL sends at most 4 key shares' },
+        ]);
+        expect(hello.groups).to.deep.equal([0x001d, 0x0017, 0x0018, 0x0019, 0x0100]);
+        expect(hello.keyShareGroups).to.deep.equal([0x001d, 0x0017, 0x0018, 0x0019]);
+    });
+
+    it('keeps GREASE, key shares, certificate compression and record size limit from a captured hello', async () => {
+        const spec: ClientHelloSpec = {
+            cipherSuites: [0x1301, 0xc02b],
+            extensions: [
+                { type: 0x5a5a }, { type: 0 }, { type: 10 }, { type: 13 }, { type: 43 }, { type: 51 },
+                { type: 27, data: Buffer.from([0x06, 0x00, 0x02, 0x00, 0x01, 0x00, 0x03]) },
+                { type: 28, data: Buffer.from([0x40, 0x00]) },
+            ],
+            supportedGroups: [0x11ec, 0x001d, 0x0017],
+            keyShareGroups: [0x11ec, 0x001d, 0x0017],
+            signatureAlgorithms: [0x0403],
+        };
+
+        const original = await captureClientHello(impersonate(spec).tlsOptions);
+        const reproduced = await captureClientHello(impersonateFromClientHello(original.raw).tlsOptions);
+
+        const greaseIds = (hello: typeof original) => hello.raw.extensions.map(e => e.id).filter(isGreaseValue);
+        expect(greaseIds(reproduced)).to.deep.equal(greaseIds(original));
+        expect(reproduced.keyShareGroups).to.deep.equal([0x11ec, 0x001d, 0x0017]);
+        expect(reproduced.recordSizeLimit).to.equal(0x4000);
+        expect(reproduced.certCompressionAlgorithms).to.deep.equal(original.certCompressionAlgorithms);
+    });
+
+    it('only advertises certificate compression algorithms this build supports', async () => {
+        const spec: ClientHelloSpec = {
+            cipherSuites: [0x1301, 0xc02b],
+            extensions: [
+                { type: 0 }, { type: 10 }, { type: 13 }, { type: 43 }, { type: 51 },
+                { type: 27, data: Buffer.from([0x04, 0x00, 0x07 /* unknown */, 0x00, 0x02]) },
+            ],
+            supportedGroups: [0x001d, 0x0017],
+            signatureAlgorithms: [0x0403],
+        };
+
+        const { tlsOptions, unsupported } = impersonate(spec);
+        const hello = await captureClientHello(tlsOptions);
+        const report = unsupported.find(u => u.kind === 'extension' && u.id === 27);
+
+        if (tls.getCertificateCompressionAlgorithms === undefined) {
+            expect(report?.reason).to.equal('certificate compression not available in this OpenSSL build');
+            expect(hello.certCompressionAlgorithms).to.equal(undefined);
+        } else {
+            expect(report?.reason).to.equal(
+                'some requested certificate compression algorithms are not available in this OpenSSL build');
+            expect(hello.certCompressionAlgorithms).to.deep.equal([2]);
+        }
     });
 
     it('degrades gracefully for unreproducible codepoints and reports them', async () => {

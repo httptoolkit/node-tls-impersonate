@@ -53,7 +53,7 @@ function main() {
   // 2. Load it and check the full export surface.
   const binding = gypBuild(root);
   for (const name of [
-    'addCustomExtension', 'isPredefinedExtension', 'enableCompressCertificate',
+    'addCustomExtension', 'isPredefinedExtension',
     'enablePostHandshakeAuth', 'setOptions', 'clearOptions', 'constants',
   ]) {
     assert(name in binding, 'missing export: ' + name);
