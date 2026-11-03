@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
+import { BEFORE_OPENSSL_4, bundlesOpenSsl4, captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
 
 // OkHttp 4.x on Android (Conscrypt/BoringSSL) for a fresh connection with default ALPN
 const okhttpSpec: ClientHelloSpec = {
@@ -86,8 +86,7 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
         expect(hello.extensions).to.have.length(11);
     });
 
-    // Requires OpenSSL EC point format fix (OpenSSL PR 26990)
-    it('should send only uncompressed EC point format', expectedFailure('*', async () => {
+    it('should send only uncompressed EC point format', expectedFailure(BEFORE_OPENSSL_4, async () => {
         const { tlsOptions } = impersonate(okhttpSpec);
         const hello = await captureClientHello(tlsOptions);
 
@@ -104,7 +103,8 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
         expect(hello.ja4).to.equal(OKHTTP_EXPECTED_JA4);
     });
 
-    // JA3 includes EC point formats, so depends on OpenSSL PR 26990
+    // JA3 also hashes extension order, which OpenSSL fixes and is never reproducible.
+    // Before OpenSSL 4 the EC point formats can't match either.
     it('should match OkHttp JA3 fingerprint', expectedFailure('*', async () => {
         const { tlsOptions } = impersonate(okhttpSpec);
         const hello = await captureClientHello(tlsOptions);
@@ -112,7 +112,7 @@ describe('OkHttp/Android TLS fingerprint impersonation', () => {
         expect(hello.ja3).to.equal(OKHTTP_EXPECTED_JA3);
     }, () => {
         const { unsupported } = impersonate(okhttpSpec);
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     runRealWorldTests('OkHttp', okhttpSpec);

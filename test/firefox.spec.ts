@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
+import { BEFORE_OPENSSL_4, bundlesOpenSsl4, captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
 
 // Firefox 133+ ClientHello spec
 const firefoxSpec: ClientHelloSpec = {
@@ -97,8 +97,7 @@ describe('Firefox TLS fingerprint impersonation', () => {
         expect(unsupported.some(u => u.kind === 'extension' && u.id === 27)).to.be.true;
     }));
 
-    // Requires OpenSSL EC point format fix (OpenSSL PR 26990)
-    it('should send only uncompressed EC point format', expectedFailure('*', async () => {
+    it('should send only uncompressed EC point format', expectedFailure(BEFORE_OPENSSL_4, async () => {
         const { tlsOptions } = impersonate(firefoxSpec);
         const hello = await captureClientHello(tlsOptions);
 
@@ -109,7 +108,7 @@ describe('Firefox TLS fingerprint impersonation', () => {
     }));
 
     // Depends on the correct extension set (certificate compression, Node 26.4.0+).
-    // Unlike JA3, JA4 does not hash EC point formats, so it passes without OpenSSL PR 26990.
+    // Unlike JA3, JA4 does not hash EC point formats or extension order.
     it('should match Firefox JA4 fingerprint', expectedFailure('<24.19.0 <26.4.0', async () => {
         const { tlsOptions } = impersonate(firefoxSpec);
         const hello = await captureClientHello(tlsOptions);
@@ -127,7 +126,7 @@ describe('Firefox TLS fingerprint impersonation', () => {
         expect(hello.ja3).to.equal(FIREFOX_EXPECTED_JA3);
     }, () => {
         const { unsupported } = impersonate(firefoxSpec);
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     runRealWorldTests('Firefox', firefoxSpec);

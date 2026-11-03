@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
+import { BEFORE_OPENSSL_4, bundlesOpenSsl4, captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
 
 // Safari 26.0 (macOS Tahoe) ClientHello spec, derived from:
 // https://github.com/lexiforest/curl-impersonate/blob/main/bin/curl_safari260
@@ -101,10 +101,10 @@ describe('Safari TLS fingerprint impersonation', () => {
         expect(hello.groups).to.deep.equal([0x11ec, 0x001d, 0x0017, 0x0018, 0x0019]);
     });
 
-    // The extension-set mismatch is the padding extension (21): OpenSSL only pads
-    // a 256-511 byte hello, and Safari's post-quantum key share makes this one
-    // larger, so it isn't added. Padding is always reported as unsupported.
-    it('should match Safari extensions exactly', expectedFailure('*', async () => {
+    // Before OpenSSL 4 the extension-set mismatch is the padding extension (21): OpenSSL
+    // only pads a 256-511 byte hello, and Safari's post-quantum key share makes this one
+    // larger, so it isn't added. Padding is always reported as unsupported there.
+    it('should match Safari extensions exactly', expectedFailure(BEFORE_OPENSSL_4, async () => {
         const { tlsOptions } = impersonate(safariSpec);
         const hello = await captureClientHello(tlsOptions);
         const extSet = new Set(hello.extensions);
@@ -117,7 +117,7 @@ describe('Safari TLS fingerprint impersonation', () => {
         expect(unsupported.some(u => u.kind === 'extension' && u.id === 21)).to.be.true;
     }));
 
-    it('should send only uncompressed EC point format', expectedFailure('*', async () => {
+    it('should send only uncompressed EC point format', expectedFailure(BEFORE_OPENSSL_4, async () => {
         const { tlsOptions } = impersonate(safariSpec);
         const hello = await captureClientHello(tlsOptions);
 
@@ -138,8 +138,9 @@ describe('Safari TLS fingerprint impersonation', () => {
         expect(unsupported.some(u => u.kind === 'cipherSuite' && u.id === 0xc008)).to.be.true;
     }));
 
-    // JA3 hashes ciphers, extensions and EC point formats - so 3DES, padding and
-    // ec_point_formats all contribute; all three must be reported.
+    // JA3 hashes ciphers, extensions (including their order, which is never reproducible)
+    // and EC point formats. 3DES is always reported, and padding and ec_point_formats are
+    // reported before OpenSSL 4.
     it('should match Safari JA3 fingerprint', expectedFailure('*', async () => {
         const { tlsOptions } = impersonate(safariSpec);
         const hello = await captureClientHello(tlsOptions);
@@ -148,8 +149,8 @@ describe('Safari TLS fingerprint impersonation', () => {
     }, () => {
         const { unsupported } = impersonate(safariSpec);
         expect(unsupported.some(u => u.kind === 'cipherSuite' && u.id === 0xc008)).to.be.true;
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 21)).to.be.true;
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 21)).to.equal(!bundlesOpenSsl4);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     runRealWorldTests('Safari', safariSpec);

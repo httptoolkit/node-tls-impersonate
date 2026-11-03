@@ -3,7 +3,7 @@ import * as tls from 'node:tls';
 import * as https from 'node:https';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello, expectedFailure } from './test-helpers.js';
+import { bundlesOpenSsl4, captureClientHello, expectedFailure } from './test-helpers.js';
 
 const FINGERPRINT_URL = 'https://testserver.host/tls/fingerprint';
 
@@ -184,7 +184,7 @@ describe('Live fingerprint verification', function () {
         expect(hello.ja3).to.equal(CHROME_EXPECTED_JA3);
     }, () => {
         const { unsupported } = impersonate(chromeSpec);
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     it('Firefox spec should produce the correct JA4 and JA3 locally', expectedFailure('*', async () => {
@@ -195,7 +195,7 @@ describe('Live fingerprint verification', function () {
         expect(hello.ja3).to.equal(FIREFOX_EXPECTED_JA3);
     }, () => {
         const { unsupported } = impersonate(firefoxSpec);
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     it('Safari spec should produce the correct JA4 and JA3 locally', expectedFailure('*', async () => {
@@ -207,8 +207,8 @@ describe('Live fingerprint verification', function () {
     }, () => {
         const { unsupported } = impersonate(safariSpec);
         expect(unsupported.some(u => u.kind === 'cipherSuite' && u.id === 0xc008)).to.be.true;
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 21)).to.be.true;
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 21)).to.equal(!bundlesOpenSsl4);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     // --- Live server fingerprint tests ---
@@ -226,7 +226,7 @@ describe('Live fingerprint verification', function () {
         expect(fp.ja3).to.equal(CHROME_EXPECTED_JA3);
     }, () => {
         const { unsupported } = impersonate(chromeSpec);
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     it('Firefox spec should produce the correct JA4 and JA3 on a live server', expectedFailure('*', async function () {
@@ -242,7 +242,7 @@ describe('Live fingerprint verification', function () {
         expect(fp.ja3).to.equal(FIREFOX_EXPECTED_JA3);
     }, () => {
         const { unsupported } = impersonate(firefoxSpec);
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     it('Safari spec should produce the correct JA4 and JA3 on a live server', expectedFailure('*', async function () {
@@ -259,8 +259,8 @@ describe('Live fingerprint verification', function () {
     }, () => {
         const { unsupported } = impersonate(safariSpec);
         expect(unsupported.some(u => u.kind === 'cipherSuite' && u.id === 0xc008)).to.be.true;
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 21)).to.be.true;
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 21)).to.equal(!bundlesOpenSsl4);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     // --- Round-trip and protocol tests ---

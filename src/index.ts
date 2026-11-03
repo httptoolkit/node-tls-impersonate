@@ -102,11 +102,24 @@ const CIPHER_NAMES: Record<number, string> = {
 /** Supported group IANA ID → OpenSSL curve name */
 const GROUP_NAMES: Record<number, string> = {
     0x11ec: 'X25519MLKEM768',
+    0x11eb: 'SecP256r1MLKEM768',
+    0x11ed: 'SecP384r1MLKEM1024',
+    0x11ee: 'curveSM2MLKEM768',
+    0x0200: 'MLKEM512',
+    0x0201: 'MLKEM768',
+    0x0202: 'MLKEM1024',
     0x001d: 'X25519',
     0x0017: 'P-256',
     0x0018: 'P-384',
     0x0019: 'P-521',
     0x001e: 'X448',
+    0x001a: 'brainpoolP256r1',
+    0x001b: 'brainpoolP384r1',
+    0x001c: 'brainpoolP512r1',
+    0x001f: 'brainpoolP256r1tls13',
+    0x0020: 'brainpoolP384r1tls13',
+    0x0021: 'brainpoolP512r1tls13',
+    0x0029: 'curveSM2',
     0x0100: 'ffdhe2048',
     0x0101: 'ffdhe3072',
     0x0102: 'ffdhe4096',
@@ -136,6 +149,19 @@ const SIGALG_NAMES: Record<number, string> = {
     0x0904: 'mldsa44',
     0x0905: 'mldsa65',
     0x0906: 'mldsa87',
+    0x0911: 'slhdsa_sha2_128s',
+    0x0912: 'slhdsa_sha2_128f',
+    0x0913: 'slhdsa_sha2_192s',
+    0x0914: 'slhdsa_sha2_192f',
+    0x0915: 'slhdsa_sha2_256s',
+    0x0916: 'slhdsa_sha2_256f',
+    0x0917: 'slhdsa_shake_128s',
+    0x0918: 'slhdsa_shake_128f',
+    0x0919: 'slhdsa_shake_192s',
+    0x091a: 'slhdsa_shake_192f',
+    0x091b: 'slhdsa_shake_256s',
+    0x091c: 'slhdsa_shake_256f',
+    0x0708: 'sm2sig_sm3',
     0x0201: 'rsa_pkcs1_sha1',
     0x0202: 'dsa_sha1',
     0x0203: 'ecdsa_sha1',
@@ -335,10 +361,11 @@ function getDefaultExtensionData(type: number): Buffer | undefined {
     if (isGreaseValue(type)) return Buffer.from([0x00]);
     switch (type) {
         case 18: return Buffer.alloc(0); // SCT: empty
+        case EXT_PADDING: return Buffer.alloc(0);
         case 28: return Buffer.from([0x40, 0x01]); // record_size_limit: 16385
         case 34: return generateGreaseDelegatedCredentialsPayload();
         case 17613: return generateAlpsPayload();
-        case 65037: return generateGreaseEchPayload(); // ECH GREASE
+        case EXT_ENCRYPTED_CLIENT_HELLO: return generateGreaseEchPayload();
         case EXT_SERVER_PADDING: return Buffer.from([0x00, 0x00]); // Chrome 155 always sends 0 anyway
         case EXT_TRUST_ANCHORS: return Buffer.from([0x00, 0x00]); // Should be safe-ish, works everywhere for now
         default: return undefined;
@@ -365,9 +392,11 @@ const EXT_COMPRESS_CERTIFICATE = 27;
 const EXT_SESSION_TICKET = 35;
 const EXT_POST_HANDSHAKE_AUTH = 49;
 const EXT_SUPPORTED_VERSIONS = 43;
+const EXT_SUPPORTED_GROUPS = 10;
 const EXT_SIGNATURE_ALGORITHMS = 13;
 const EXT_SERVER_PADDING = 4832;
 const EXT_TRUST_ANCHORS = 51764;
+const EXT_ENCRYPTED_CLIENT_HELLO = 65037;
 
 /** TLS version wire codepoints, as they appear in supported_versions & client_version */
 const TLS1_0 = 0x0301;
@@ -394,16 +423,67 @@ const MIN_NEGOTIABLE_VERSION: Record<'secure' | 'insecure', number> = {
 // Not exposed in Node's crypto.constants
 const SSL_OP_TLSEXT_PADDING = 1 << 4;
 
-/** The ec_point_formats OpenSSL advertises, which it does not let us configure.
- *  OpenSSL < 3.6 sends uncompressed + both compressed [0,1,2]; 3.6+ defaults to
- *  uncompressed only [0]. Detected by version until Node ships an API (or 3.6+)
- *  that lets us set it directly. */
-function opensslEcPointFormats(): number[] {
+// Option bits from newer OpenSSL headers than the addon may be built against
+const SSL_OP_LEGACY_EC_POINT_FORMATS = 2 ** 36; // OpenSSL 3.6+
+const SSL_OP_ECH_GREASE = 2 ** 37; // OpenSSL 4.0+, when built with ECH
+
+function opensslAtLeast(major: number, minor: number): boolean {
     const match = /^(\d+)\.(\d+)/.exec(process.versions.openssl ?? '');
-    const major = match ? Number(match[1]) : 0;
-    const minor = match ? Number(match[2]) : 0;
-    const atLeast36 = major > 3 || (major === 3 && minor >= 6);
-    return atLeast36 ? [0] : [0, 1, 2];
+    if (!match) return false;
+    const [actualMajor, actualMinor] = [Number(match[1]), Number(match[2])];
+    return actualMajor > major || (actualMajor === major && actualMinor >= minor);
+}
+
+const ALL_EC_POINT_FORMATS = [0, 1, 2];
+
+/** The ec_point_formats lists this OpenSSL can send. Before 3.6 it always sends all
+ *  three. From 3.6 it defaults to uncompressed only, and SSL_OP_LEGACY_EC_POINT_FORMATS
+ *  restores all three. */
+function availableEcPointFormats(): number[][] {
+    return opensslAtLeast(3, 6) ? [[0], ALL_EC_POINT_FORMATS] : [ALL_EC_POINT_FORMATS];
+}
+
+type ProbedOption = 'ecdhCurve' | 'sigalgs';
+
+function acceptsOption(option: ProbedOption, value: string): boolean {
+    try {
+        tls.createSecureContext({ [option]: value });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+const NOT_AVAILABLE = 'not available in this OpenSSL build';
+
+/** Group and sigalg names this OpenSSL rejects. The tables cover names that only exist in
+ *  newer OpenSSL releases (e.g. curveSM2, SLH-DSA in 4.0+), where an unknown name makes the
+ *  whole list fail. Bounded by the size of the lookup tables. */
+const unavailableNames: Record<ProbedOption, Set<string>> = {
+    ecdhCurve: new Set(),
+    sigalgs: new Set(),
+};
+
+interface NamedCodepoint {
+    id: number;
+    name: string;
+}
+
+/** Removes and reports the entries this OpenSSL rejects. Entries are only probed one by
+ *  one if the whole list is rejected. */
+function dropUnavailable(
+    option: ProbedOption,
+    kind: 'supportedGroup' | 'signatureAlgorithm',
+    entries: NamedCodepoint[],
+    unsupported: UnsupportedFeature[],
+): NamedCodepoint[] {
+    if (!entries.length || acceptsOption(option, entries.map(e => e.name).join(':'))) return entries;
+    return entries.filter(({ id, name }) => {
+        if (acceptsOption(option, name)) return true;
+        unavailableNames[option].add(name);
+        unsupported.push({ kind, id, reason: NOT_AVAILABLE });
+        return false;
+    });
 }
 
 // ─── Main Function ───────────────────────────────────────────────────────────
@@ -557,7 +637,7 @@ export function impersonate(
         }
     }
 
-    const groups: string[] = [];
+    let groups: NamedCodepoint[] = [];
     for (const id of spec.supportedGroups) {
         if (isGreaseValue(id)) continue;
         const name = GROUP_NAMES[id];
@@ -565,10 +645,14 @@ export function impersonate(
             unsupported.push({ kind: 'supportedGroup', id, reason: 'not a known supported group' });
             continue;
         }
-        groups.push(name);
+        if (unavailableNames.ecdhCurve.has(name)) {
+            unsupported.push({ kind: 'supportedGroup', id, reason: NOT_AVAILABLE });
+            continue;
+        }
+        groups.push({ id, name });
     }
 
-    const sigalgs: string[] = [];
+    let sigalgs: NamedCodepoint[] = [];
     for (const id of spec.signatureAlgorithms) {
         if (isGreaseValue(id)) continue;
         const name = SIGALG_NAMES[id];
@@ -576,7 +660,11 @@ export function impersonate(
             unsupported.push({ kind: 'signatureAlgorithm', id, reason: 'not a known signature algorithm' });
             continue;
         }
-        sigalgs.push(name);
+        if (unavailableNames.sigalgs.has(name)) {
+            unsupported.push({ kind: 'signatureAlgorithm', id, reason: NOT_AVAILABLE });
+            continue;
+        }
+        sigalgs.push({ id, name });
     }
 
     const cipherString = tls12Ciphers.join(':');
@@ -600,17 +688,34 @@ export function impersonate(
     // minVersion is left alone and the gap is reported below.
     const emitScsv = security === 'insecure' && scsvId !== undefined;
 
-    const buildContext = (range: { min: number, max: number }, tls12CipherString: string) =>
+    const createContext = (range: { min: number, max: number }, tls12CipherString: string) =>
         tls.createSecureContext({
             ...secureContextOptions,
             ciphers: tls12CipherString,
             // Empty sigalgs means a pre-TLS1.2 hello. Node rejects an empty string here, so we
             // skip the option, and OpenSSL then uses defaults for TLS 1.2+ (reported below)
-            ...(sigalgs.length ? { sigalgs: sigalgs.join(':') } : {}),
-            ecdhCurve: groups.join(':'),
+            ...(sigalgs.length ? { sigalgs: sigalgs.map(s => s.name).join(':') } : {}),
+            // An empty group list fails every ECDHE or TLS 1.3 handshake, so fall back to defaults
+            ...(groups.length ? { ecdhCurve: groups.map(g => g.name).join(':') } : {}),
             minVersion: VERSION_NAMES[emitScsv ? TLS1_0 : range.min],
             maxVersion: VERSION_NAMES[range.max],
         });
+
+    // Group and sigalg names are only probed if the context can't be built, so a spec this
+    // OpenSSL fully supports costs nothing extra. Ciphers are applied first, so a cipher
+    // error says nothing about the other lists.
+    const buildContext = (range: { min: number, max: number }, tls12CipherString: string) => {
+        try {
+            return createContext(range, tls12CipherString);
+        } catch (e) {
+            if ((e as { code?: string }).code === 'ERR_SSL_NO_CIPHER_MATCH') throw e;
+            const requestedCount = groups.length + sigalgs.length;
+            groups = dropUnavailable('ecdhCurve', 'supportedGroup', groups, unsupported);
+            sigalgs = dropUnavailable('sigalgs', 'signatureAlgorithm', sigalgs, unsupported);
+            if (groups.length + sigalgs.length === requestedCount) throw e;
+            return createContext(range, tls12CipherString);
+        }
+    };
 
     const resolveVersions = (hasTls12Ciphers: boolean) => {
         const range = resolveVersionRange(
@@ -637,7 +742,7 @@ export function impersonate(
         for (const id of requestedCipherIds) {
             if (id >= 0x1300 && id <= 0x13ff) continue;
             unsupported.push({
-                kind: 'cipherSuite', id, reason: 'not available in this OpenSSL build',
+                kind: 'cipherSuite', id, reason: NOT_AVAILABLE,
             });
         }
 
@@ -673,6 +778,14 @@ export function impersonate(
                 ? 'no requested signature algorithm could be reproduced, so OpenSSL ' +
                     'advertises its own defaults when TLS 1.2+ is offered'
                 : 'signature_algorithms is always emitted by OpenSSL when TLS 1.2+ is offered',
+        });
+    }
+
+    if (!groups.length && extTypes.has(EXT_SUPPORTED_GROUPS)) {
+        unsupported.push({
+            kind: 'extension',
+            id: EXT_SUPPORTED_GROUPS,
+            reason: 'no requested supported group could be reproduced, so OpenSSL advertises its own defaults',
         });
     }
 
@@ -717,30 +830,30 @@ export function impersonate(
     const configuredCiphers = new Set(getCiphers(ctx));
     for (const id of requestedCipherIds) {
         if (!configuredCiphers.has(id)) {
-            unsupported.push({ kind: 'cipherSuite', id, reason: 'not available in this OpenSSL build' });
+            unsupported.push({ kind: 'cipherSuite', id, reason: NOT_AVAILABLE });
         }
     }
 
-    // OpenSSL controls the ec_point_formats content (we cannot set it yet), so
-    // a spec asking for a different set than this OpenSSL advertises cannot be
-    // reproduced - e.g. Chrome's [0] on OpenSSL < 3.6, which sends [0,1,2].
     if (extTypes.has(EXT_EC_POINT_FORMATS)) {
-        const requested = spec.ecPointFormats ?? [0];
-        const emitted = opensslEcPointFormats();
-        const matches = requested.length === emitted.length &&
-            requested.every((f, i) => f === emitted[i]);
-        if (!matches) {
+        const requested = (spec.ecPointFormats ?? [0]).join(',');
+        const available = availableEcPointFormats();
+        if (available.length > 1 && requested === ALL_EC_POINT_FORMATS.join(',')) {
+            setOptions(ctx, SSL_OP_LEGACY_EC_POINT_FORMATS);
+        } else if (!available.some(formats => formats.join(',') === requested)) {
             unsupported.push({
                 kind: 'extension',
                 id: EXT_EC_POINT_FORMATS,
-                reason: `ec_point_formats content is controlled by OpenSSL (advertises [${emitted.join(',')}]) and cannot be set`,
+                reason: 'ec_point_formats content is controlled by OpenSSL, which can only send ' +
+                    available.map(formats => `[${formats.join(',')}]`).join(' or '),
             });
         }
     }
 
-    // Padding (RFC 7685) is always reported when requested. OpenSSL decides whether to emit it
-    // from the final ClientHello size, so we enable it below but can't really control it.
-    if (extTypes.has(EXT_PADDING)) {
+    // Before OpenSSL 4.1, padding (RFC 7685) is built in and OpenSSL decides whether to emit it
+    // from the final ClientHello size, so we enable it below but can't really control it. From
+    // 4.1 OpenSSL never sends it, but it can be registered as a custom extension instead.
+    const builtInPadding = extTypes.has(EXT_PADDING) && isPredefinedExtension(EXT_PADDING);
+    if (builtInPadding) {
         unsupported.push({
             kind: 'extension',
             id: EXT_PADDING,
@@ -758,7 +871,7 @@ export function impersonate(
 
     // Enable conditional padding (OpenSSL pads ClientHello to 512 bytes when
     // it would otherwise be 256-511 bytes, per RFC 7685 F5 workaround).
-    if (extTypes.has(EXT_PADDING)) {
+    if (builtInPadding) {
         setOptions(ctx, SSL_OP_TLSEXT_PADDING);
     }
 
@@ -807,6 +920,12 @@ export function impersonate(
     // via the config above; some (like SCT=18) can still be added as custom
     // overrides if they have data.
     for (const ext of spec.extensions) {
+        if (ext.type === EXT_ENCRYPTED_CLIENT_HELLO && isPredefinedExtension(ext.type)) {
+            // OpenSSL with native ECH refuses it as a custom extension, but can GREASE it itself
+            setOptions(ctx, SSL_OP_ECH_GREASE);
+            continue;
+        }
+
         if (isPredefinedExtension(ext.type)) {
             const data = ext.data ?? getDefaultExtensionData(ext.type);
             if (data !== undefined) {

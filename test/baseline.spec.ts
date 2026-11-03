@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello } from './test-helpers.js';
+import { bundlesOpenSsl4, captureClientHello } from './test-helpers.js';
 
 describe('Baseline impersonation', () => {
     it('round-trip: impersonating Node.js defaults reproduces the same fingerprint data', async () => {
@@ -190,5 +190,49 @@ describe('Baseline impersonation', () => {
         expect(hello.ciphers).to.include(0x1301).and.to.include(0xc02b);
         expect(hello.ciphers).to.not.include(0xdead);
         expect(hello.groups).to.include(0x001d).and.to.not.include(0xbeef);
+    });
+
+    it('falls back to default groups when no requested group is reproducible', async () => {
+        const spec: ClientHelloSpec = {
+            cipherSuites: [0x1301, 0xc02b],
+            extensions: [{ type: 0 }, { type: 10 }, { type: 13 }, { type: 43 }, { type: 51 }],
+            supportedGroups: [0xbeef /* unknown */],
+            signatureAlgorithms: [0x0403],
+        };
+
+        const { tlsOptions, unsupported } = impersonate(spec);
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 10)).to.be.true;
+
+        // With no groups at all, OpenSSL can't build a TLS 1.3 ClientHello
+        const hello = await captureClientHello(tlsOptions);
+        expect(hello.groups).to.not.be.empty;
+    });
+
+    it('drops and reports groups and sigalgs this OpenSSL lacks', async () => {
+        const spec: ClientHelloSpec = {
+            cipherSuites: [0x1301, 0xc02b],
+            extensions: [{ type: 0 }, { type: 10 }, { type: 13 }, { type: 43 }, { type: 51 }],
+            supportedGroups: [0x001d, 0x0029 /* curveSM2, OpenSSL 4.0+ */, 0x0017],
+            signatureAlgorithms: [0x0403, 0x0911 /* slhdsa_sha2_128s, OpenSSL 4.0+ */, 0x0804],
+        };
+
+        // The second call covers names already known to be unavailable
+        for (let i = 0; i < 2; i++) {
+            const { tlsOptions, unsupported } = impersonate(spec);
+            const hello = await captureClientHello(tlsOptions);
+
+            if (bundlesOpenSsl4) {
+                expect(unsupported).to.deep.equal([]);
+                expect(hello.groups).to.deep.equal([0x001d, 0x0029, 0x0017]);
+                expect(hello.signatureAlgorithms).to.deep.equal([0x0403, 0x0911, 0x0804]);
+            } else {
+                expect(unsupported).to.have.deep.members([
+                    { kind: 'supportedGroup', id: 0x0029, reason: 'not available in this OpenSSL build' },
+                    { kind: 'signatureAlgorithm', id: 0x0911, reason: 'not available in this OpenSSL build' },
+                ]);
+                expect(hello.groups).to.deep.equal([0x001d, 0x0017]);
+                expect(hello.signatureAlgorithms).to.deep.equal([0x0403, 0x0804]);
+            }
+        }
     });
 });

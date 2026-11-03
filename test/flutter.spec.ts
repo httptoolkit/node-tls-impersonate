@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { impersonate } from '../src/index.js';
 import type { ClientHelloSpec } from '../src/index.js';
-import { captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
+import { BEFORE_OPENSSL_4, bundlesOpenSsl4, captureClientHello, expectedFailure, runRealWorldTests } from './test-helpers.js';
 
 // Flutter / Dart 3.11 HTTP client ClientHello, captured from an Android 16 device.
 const dartSpec: ClientHelloSpec = {
@@ -83,8 +83,7 @@ describe('Flutter TLS fingerprint impersonation', () => {
         expect(hello.extensions).to.have.length(10);
     });
 
-    // Requires OpenSSL EC point format fix (OpenSSL PR 26990)
-    it('should send only uncompressed EC point format', expectedFailure('*', async () => {
+    it('should send only uncompressed EC point format', expectedFailure(BEFORE_OPENSSL_4, async () => {
         const { tlsOptions } = impersonate(dartSpec);
         const hello = await captureClientHello(tlsOptions);
 
@@ -101,7 +100,8 @@ describe('Flutter TLS fingerprint impersonation', () => {
         expect(hello.ja4).to.equal(DART_EXPECTED_JA4);
     });
 
-    // JA3 includes EC point formats, so depends on OpenSSL PR 26990
+    // JA3 also hashes extension order, which OpenSSL fixes and is never reproducible.
+    // Before OpenSSL 4 the EC point formats can't match either.
     it('should match Flutter JA3 fingerprint', expectedFailure('*', async () => {
         const { tlsOptions } = impersonate(dartSpec);
         const hello = await captureClientHello(tlsOptions);
@@ -109,7 +109,7 @@ describe('Flutter TLS fingerprint impersonation', () => {
         expect(hello.ja3).to.equal(DART_EXPECTED_JA3);
     }, () => {
         const { unsupported } = impersonate(dartSpec);
-        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.be.true;
+        expect(unsupported.some(u => u.kind === 'extension' && u.id === 11)).to.equal(!bundlesOpenSsl4);
     }));
 
     runRealWorldTests('Flutter', dartSpec);

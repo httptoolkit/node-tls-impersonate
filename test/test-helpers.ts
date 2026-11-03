@@ -362,6 +362,15 @@ export async function verifyRemoteHandshake(
 }
 
 /**
+ * Official Node builds before 27 bundle OpenSSL 3.x, which always sends all three EC
+ * point formats and decides itself whether to send padding. Node 27+ bundles OpenSSL
+ * 4.1+, where both can be reproduced.
+ */
+export const BEFORE_OPENSSL_4 = '<27.0.0-0';
+export const FROM_OPENSSL_4 = '>=27.0.0-0';
+export const bundlesOpenSsl4 = satisfies(process.version, FROM_OPENSSL_4, { includePrerelease: true });
+
+/**
  * Wrap a fingerprint test that some builds cannot fully satisfy. `test` runs
  * normally, but on the Node versions matched by `nodeVersions` it is expected to
  * fail - and when it does, `antiTest` must pass instead. Use `antiTest` to assert
